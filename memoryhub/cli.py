@@ -37,9 +37,48 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_hook(args: argparse.Namespace) -> int:
     payload = read_payload()
     context = store_from_args(args).capture_hook(args.event, args.actor, payload)
-    if args.event == "session-start":
+    if args.event in {"session-start", "post-compact"}:
         print(context, end="")
     return 0
+
+
+def cmd_compaction_doctor(args: argparse.Namespace) -> int:
+    report = store_from_args(args).compaction_report(
+        cwd=args.cwd, all_workspaces=args.all
+    )
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        counts = report["counts"]
+        print(
+            f"{'OK' if report['ok'] else 'FAILED'} compaction continuity: "
+            f"{counts['verified']} verified, {counts['pending']} recoverable pending, "
+            f"{counts['failed']} failed, {counts['malformed']} malformed"
+        )
+    return 0 if report["ok"] else 1
+
+
+def cmd_delegate_claude(args: argparse.Namespace) -> int:
+    from .claude_worker import exit_code, run_delegation
+
+    result = run_delegation(
+        objective=args.objective,
+        cwd=Path(args.cwd or Path.cwd()),
+        constraints=args.constraint,
+        validations=args.validation,
+        allowed_paths=args.allowed_path,
+        timeout_seconds=args.timeout,
+        grace_seconds=args.kill_grace,
+        claude_binary=args.claude_binary,
+        model=args.model,
+        effort=args.effort,
+        permission_mode=args.permission_mode,
+        task_id=args.task_id,
+        max_budget_usd=args.max_budget_usd,
+        dry_run=args.dry_run,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return exit_code(str(result["status"]))
 
 
 def item_map(args: argparse.Namespace) -> dict[str, list[str]]:
@@ -312,7 +351,10 @@ def parser() -> argparse.ArgumentParser:
     hook.add_argument(
         "--event",
         required=True,
-        choices=["session-start", "user-prompt", "tool", "stop", "pre-compact"],
+        choices=[
+            "session-start", "user-prompt", "tool", "stop",
+            "pre-compact", "post-compact",
+        ],
     )
     hook.add_argument("--actor", required=True)
     hook.set_defaults(func=cmd_hook)
@@ -360,6 +402,41 @@ def parser() -> argparse.ArgumentParser:
     doctor = commands.add_parser("doctor", help="Validate database, privacy and integrations")
     doctor.add_argument("--target-home")
     doctor.set_defaults(func=cmd_doctor)
+
+    compaction_doctor = commands.add_parser(
+        "compaction-doctor",
+        help="Verify durable pre/post compaction snapshots",
+    )
+    compaction_doctor.add_argument("--cwd")
+    compaction_doctor.add_argument("--all", action="store_true")
+    compaction_doctor.add_argument("--json", action="store_true")
+    compaction_doctor.set_defaults(func=cmd_compaction_doctor)
+
+    delegate = commands.add_parser(
+        "delegate-claude",
+        help="Run one bounded sequential Claude coding worker with hard cleanup",
+    )
+    delegate.add_argument("--objective", required=True)
+    delegate.add_argument("--cwd")
+    delegate.add_argument("--task-id")
+    delegate.add_argument("--constraint", action="append", default=[])
+    delegate.add_argument("--validation", action="append", default=[])
+    delegate.add_argument("--allowed-path", action="append", default=[])
+    delegate.add_argument("--timeout", type=int, default=900)
+    delegate.add_argument("--kill-grace", type=float, default=3.0)
+    delegate.add_argument("--claude-binary", default="claude")
+    delegate.add_argument("--model", default="opus")
+    delegate.add_argument(
+        "--effort", choices=["low", "medium", "high", "xhigh", "max"], default="high"
+    )
+    delegate.add_argument(
+        "--permission-mode",
+        choices=["acceptEdits", "auto", "dontAsk", "manual", "plan"],
+        default="acceptEdits",
+    )
+    delegate.add_argument("--max-budget-usd", type=float)
+    delegate.add_argument("--dry-run", action="store_true")
+    delegate.set_defaults(func=cmd_delegate_claude)
 
     mcp = commands.add_parser("mcp", help="Run the local MCP stdio server")
     mcp.set_defaults(func=cmd_mcp)

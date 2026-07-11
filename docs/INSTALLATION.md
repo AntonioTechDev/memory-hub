@@ -26,6 +26,10 @@ private SQLite database and safely merges:
 - `~/.codex/AGENTS.md`;
 - `~/.claude/CLAUDE.md`.
 
+It also installs the portable Codex skill at
+`~/.codex/skills/delegate-to-claude/`. Re-running the installer is idempotent;
+a locally modified skill is backed up before the canonical version replaces it.
+
 It also registers the same MCP `stdio` server in both clients. Changed existing
 files are backed up before the managed block is replaced. Restart both agents
 after the first installation.
@@ -98,6 +102,9 @@ source and wiki page. It is slower and intended for release/audit checks.
   memory.db
   brain-sync-state.json
   brain-sync-hook.log
+  delegations/
+    locks/
+    runs/
   locks/
   app/
 
@@ -121,12 +128,17 @@ This does not enable remote access.
 
 ```bash
 memoryhub doctor
+memoryhub compaction-doctor
 memoryhub wiki-doctor
 memoryhub brain-doctor --deep
 codex mcp list
 claude mcp list
 crontab -l
 ```
+
+For a Claude delegation timeout, inspect the JSON result. A clean termination
+has `cleanup.reaped=true` and `cleanup.group_alive=false`. Never automatically
+retry a failed or timed-out subscription call.
 
 If a client does not see new hooks or MCP configuration, restart it. Do not
 expose SQLite or the LLM Wiki API, and do not weaken a sandbox globally. Review

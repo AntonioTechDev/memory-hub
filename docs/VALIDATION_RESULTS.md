@@ -2,8 +2,9 @@
 
 ## Verdict
 
-**Phases 1, 2 and 2.1 pass all local, structural and deployed-brain gates on the
-Automa Linux machine.** The automatic policy is canonical-only and the four
+**Phases 1, 2 and 2.1 plus compaction-aware continuity and the bounded
+Codex-to-Claude worker pass all local, structural and deployed-brain gates on
+the Automa Linux machine.** The automatic policy is canonical-only and the four
 registered brains are fresh.
 
 One final repeat of the old bidirectional live Phase 1 runner is currently
@@ -15,12 +16,17 @@ also passed on both Claude and Codex before the quota was exhausted.
 
 | Check | Result | Evidence |
 |---|---:|---|
-| Full suite | PASS | 55/55 with `ResourceWarning` treated as error |
+| Full suite | PASS | 65/65 with `ResourceWarning` treated as error |
+| Compaction continuity | PASS | deterministic pre/post pair verified; mutation detected |
+| Delegation skill | PASS | official validator; portable/idempotent install |
+| Fresh Codex skill discovery | PASS | selected the skill and wrapper once; dry-run, no raw Claude call |
+| Adversarial cleanup | PASS | timeout and leaked-child groups killed; no live residual process |
+| Real Claude delegation | PASS | Opus edited 1/1 allowed file; exact byte check; JSON schema valid |
 | Abuse/foolproof evaluation | PASS | 9/9; Phase 1 7/7, Phase 2.1 2/2 |
 | Alternating chat storm | PASS | 500/500 events durable |
 | Concurrent stress | PASS | 2,000/2,000 distinct writes, 48 workers |
 | Stress secrecy/integrity | PASS | zero raw leaks; SQLite `ok`; DB `0600` |
-| Latency | PASS | write p95 83.362 ms; context p95 5.972 ms |
+| Latency | PASS | write p95 107.291 ms; context p95 6.817 ms |
 | Compile check | PASS | `python3 -m compileall` |
 | Deep deployed doctor | PASS | 4/4 brains; 3,401 canonical files checked |
 | Deep materialization | PASS | zero missing, zero mismatched |
@@ -29,6 +35,17 @@ The abuse runner covers malformed and empty hook payloads, 100 duplicate
 submissions, a terminal crash without finalization, a 200 KB secret-bearing
 payload, the wrong customer workspace, invalid/incomplete handoffs, three
 consecutive installations and 500 alternating Claude/Codex events.
+
+The delegation tests additionally cover nonzero exit, malformed output,
+out-of-scope edits, a second concurrent worker, dry-run behavior, a worker and
+child that both ignore `SIGTERM`, and a nominally successful worker that leaks a
+background child. The live authenticated run completed in an isolated test
+repository with `cleanup.reaped=true`, `cleanup.group_alive=false`, exactly one
+changed path and no scope violation. Codex then independently verified the
+expected bytes and confirmed no `claude` or Claude-owned `node` process remained.
+A separate fresh ephemeral Codex session discovered `$delegate-to-claude`, read
+its contract and invoked the installed wrapper exactly once in `dry-run` mode;
+it did not invoke the raw Claude CLI.
 
 Phase 2.1 tests additionally cover a 150-file feature refactor, a large
 canonical merge, incremental deletion, tamper detection/repair, sensitive and

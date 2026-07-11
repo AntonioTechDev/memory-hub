@@ -302,6 +302,64 @@ class MemoryHubTests(unittest.TestCase):
         codex_agents = (self.home / ".codex" / "AGENTS.md").read_text(encoding="utf-8")
         self.assertEqual(1, codex_agents.count(START_MARKER))
         self.assertEqual(1, codex_agents.count(END_MARKER))
+        self.assertFalse(second["delegation_skill"]["changed"])
+        skill = self.home / ".codex" / "skills" / "delegate-to-claude"
+        self.assertTrue((skill / "SKILL.md").is_file())
+        self.assertTrue((skill / "scripts" / "delegate.py").is_file())
+        self.assertIn("PostCompact", config["hooks"])
+        self.assertIn("$delegate-to-claude", codex_agents)
+        delegated = subprocess.run(
+            [
+                sys.executable, str(skill / "scripts" / "delegate.py"),
+                "--objective", "Validate installed launcher", "--cwd", str(self.workspace),
+                "--dry-run",
+            ],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual("dry-run", json.loads(delegated.stdout)["status"])
+
+    def test_compaction_snapshot_is_verified_and_reinjected(self) -> None:
+        self.cli(
+            "checkpoint", "--actor", "codex",
+            "--objective", "Survive context compaction",
+            "--summary", "Implementation is half complete",
+            "--next-action", "Finish the integration test",
+            "--decision", "Use deterministic snapshots",
+        )
+        payload = {"session_id": "compact-1", "cwd": str(self.workspace)}
+        self.cli("hook", "--event", "pre-compact", "--actor", "codex", payload=payload)
+        restored = self.cli(
+            "hook", "--event", "post-compact", "--actor", "codex", payload=payload
+        ).stdout
+        self.assertIn("Survive context compaction", restored)
+        self.assertIn("Finish the integration test", restored)
+        report = json.loads(
+            self.cli("compaction-doctor", "--cwd", str(self.workspace), "--json").stdout
+        )
+        self.assertTrue(report["ok"])
+        self.assertEqual(1, report["counts"]["paired"])
+        self.assertEqual(1, report["counts"]["verified"])
+
+    def test_compaction_doctor_detects_memory_mutation_between_hooks(self) -> None:
+        self.cli(
+            "checkpoint", "--actor", "codex", "--summary", "before",
+            "--next-action", "compact safely",
+        )
+        payload = {"session_id": "compact-mismatch", "cwd": str(self.workspace)}
+        self.cli("hook", "--event", "pre-compact", "--actor", "codex", payload=payload)
+        self.cli(
+            "checkpoint", "--actor", "codex", "--summary", "mutated during compaction",
+            "--next-action", "investigate mismatch",
+        )
+        self.cli("hook", "--event", "post-compact", "--actor", "codex", payload=payload)
+        result = self.cli(
+            "compaction-doctor", "--cwd", str(self.workspace), "--json", check=False
+        )
+        self.assertEqual(1, result.returncode)
+        self.assertEqual(1, json.loads(result.stdout)["counts"]["failed"])
 
     def test_doctor_confirms_no_network_listener(self) -> None:
         install(self.home, configure_agents=False)

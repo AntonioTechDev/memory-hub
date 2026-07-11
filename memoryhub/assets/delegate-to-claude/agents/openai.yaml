@@ -1,0 +1,6 @@
+interface:
+  display_name: "Delegate to Claude"
+  short_description: "Safe sequential coding delegation to Claude"
+  default_prompt: "Use $delegate-to-claude to delegate this coding task to Claude safely and review the result."
+policy:
+  allow_implicit_invocation: true

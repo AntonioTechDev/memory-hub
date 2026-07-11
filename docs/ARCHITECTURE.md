@@ -9,6 +9,11 @@ Claude Code ----\
                  +--> lifecycle hooks + MCP stdio --> private SQLite
 Codex ----------/
 
+Codex --> delegate-to-claude skill --> bounded foreground Claude worker
+                 |                         |
+                 +--> hard timeout/lock <--+
+                 +--> result checkpoint --> private SQLite
+
 Claude Code ----\
                  +--> shared second-brain skill --> LLM Wiki MCP --> 127.0.0.1:19828
 Codex ----------/                                      |
@@ -29,6 +34,7 @@ The database and API are not exposed online.
 | `memoryhub.cli` | hooks, task operations, doctors and brain commands |
 | `memoryhub.mcp_server` | provider-neutral task tools over process stdin/stdout |
 | `memoryhub.install` | idempotent application and client configuration install |
+| `memoryhub.claude_worker` | bounded sequential Claude execution, scope checks and process cleanup |
 | `memoryhub.wiki_setup` | shared skill and existing LLM Wiki MCP registration |
 | `memoryhub.brain_sync` | canonical Git materialization, locking, rescan and freshness proof |
 
@@ -42,8 +48,14 @@ scopes, not separate databases. A Git remote gives a stable workspace identity;
 otherwise the normalized path is used. An explicit task ID cannot mutate a task
 belonging to a different workspace.
 
-Agents progressively record prompt, tool, stop and pre-compact events. A
-structured checkpoint contains objective, status, summary, decisions, blockers,
+Agents progressively record prompt, tool and stop events. Immediately before a
+context compaction, Memory Hub stores a deterministic snapshot of the active
+task, revision, objective, summary, next action and evidence. `PostCompact`
+compares its hash with current durable state and reinjects the context. The
+`compaction-doctor` distinguishes verified pairs, recoverable pending snapshots
+and actual mismatches.
+
+A structured checkpoint contains objective, status, summary, decisions, blockers,
 files, validation evidence and one concrete next action. Recent events are a
 fallback if a terminal dies before checkpointing.
 
@@ -88,6 +100,19 @@ current user instruction
 
 Memory provides context; it never authorizes an external action.
 
+## Sequential Codex-to-Claude execution
+
+The Codex skill never calls the raw Claude CLI. It invokes one adapter process
+in the current checkout only after Codex stops editing. A non-blocking file lock
+permits one worker per workspace. Claude receives a bounded objective,
+constraints, allowed paths, validations and the shared Memory Hub context.
+
+Claude runs in a dedicated process group with a hard wall-clock timeout. On
+timeout or interruption the adapter sends `SIGTERM`, escalates to `SIGKILL`,
+and reaps the child. It also removes descendants left behind after a nominally
+successful parent exit. Results must match a JSON schema; changed paths are
+compared with the pre-run worktree fingerprint. The adapter never retries.
+
 ## Security model
 
 - Operational MCP is `stdio`; it opens no listener.
@@ -99,3 +124,7 @@ Memory provides context; it never authorizes an external action.
 - Git and refresh commands are argument arrays; no shell-string execution is
   used by the adapter.
 - The sync process never fetches, checks out, commits, merges or pushes.
+- Delegation uses argument arrays and `shell=False`; reports are redacted,
+  bounded, mode `0600`, and remain local.
+- Claude cannot be accepted solely on self-report: Codex reviews the diff and
+  reruns relevant validation.

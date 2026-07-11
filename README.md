@@ -4,7 +4,7 @@ Memory Hub is a local, provider-neutral continuity layer for coding agents.
 Claude Code, Codex and future MCP-compatible clients share the same operational
 task state, while an existing LLM Wiki remains the source of project knowledge.
 
-The current release (`0.2.1`) provides three deliberately separate layers:
+The current release (`0.3.0`) provides three deliberately separate layers:
 
 - **Phase 1 — operational continuity:** prompts, recent events and structured
   handoffs are stored in one private SQLite database for the local user;
@@ -13,6 +13,10 @@ The current release (`0.2.1`) provides three deliberately separate layers:
 - **Phase 2.1 — canonical freshness:** registered project brains automatically
   follow committed `main`/`master` content, never the currently checked-out
   feature branch.
+
+Phase 1 also includes compaction-safe snapshots and an optional, strictly
+sequential Codex-to-Claude implementation worker. The installer adds the
+`delegate-to-claude` Codex skill automatically.
 
 There is no Automa cloud database, remote memory account, telemetry or public
 listener. Every customer or workstation owns its own local database and LLM
@@ -58,10 +62,32 @@ memoryhub checkpoint \
   --summary "Service installed; smoke test pending" \
   --next-action "Run make smoke-test"
 memoryhub resume task_0123456789abcdef
+memoryhub compaction-doctor
 ```
 
 Stored memory is an index, not ground truth. Current user instructions, files,
 Git and tests always take precedence.
+
+## Delegate implementation to Claude
+
+Codex uses the installed `$delegate-to-claude` skill, which always routes the
+handoff through the bounded adapter instead of invoking Claude directly:
+
+```bash
+memoryhub delegate-claude \
+  --objective "Implement the bounded change" \
+  --constraint "Preserve public APIs" \
+  --allowed-path src \
+  --allowed-path tests \
+  --validation "python3 -m unittest discover -s tests -v" \
+  --timeout 900
+```
+
+This is same-working-tree execution, but never concurrent execution. The
+adapter allows one worker per workspace, requires schema-validated output,
+checks changed paths, checkpoints the result, and kills Claude's whole process
+group on timeout, interruption, or a leaked background child. Codex must still
+review the diff and rerun validation independently.
 
 ## Validate
 
@@ -70,6 +96,7 @@ PYTHONWARNINGS='error::ResourceWarning' python3 -m unittest discover -s tests -v
 python3 scripts/run_foolproof_eval.py --events 500
 python3 scripts/run_local_stress.py --events 2000 --workers 48
 memoryhub brain-doctor --deep
+python3 -m unittest tests.test_claude_worker -v
 ```
 
 Optional live-provider gates consume Claude/Codex subscription usage:

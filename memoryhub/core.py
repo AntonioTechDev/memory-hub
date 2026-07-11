@@ -389,6 +389,61 @@ class MemoryStore:
                 return str(existing["id"]) if existing else event_id
         return event_id
 
+    @staticmethod
+    def _snapshot_hash(snapshot: dict[str, Any]) -> str:
+        encoded = json.dumps(
+            redact(snapshot), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def compaction_snapshot(
+        self, workspace_id: str, task_id: str | None
+    ) -> dict[str, Any]:
+        task = self.get_task(task_id) if task_id else None
+        if task is None:
+            return {
+                "workspace_id": workspace_id,
+                "task_id": None,
+                "state": "no-active-task",
+            }
+        task_key = str(task["id"])
+        return redact(
+            {
+                "workspace_id": workspace_id,
+                "task_id": task_key,
+                "title": str(task["title"]),
+                "objective": str(task["objective"]),
+                "status": str(task["status"]),
+                "summary": str(task["summary"]),
+                "next_action": str(task["next_action"]),
+                "revision": int(task["revision"]),
+                "updated_by": str(task["updated_by"]),
+                "items": self.task_items(task_key),
+            }
+        )
+
+    def _latest_pre_compaction(
+        self, *, actor: str, current_session_id: str, workspace_id: str
+    ) -> dict[str, Any] | None:
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT content_json FROM events
+                WHERE type='pre-compact' AND actor=? AND session_id=? AND workspace_id=?
+                ORDER BY at DESC LIMIT 20
+                """,
+                (actor, current_session_id, workspace_id),
+            ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["content_json"]))
+            except json.JSONDecodeError:
+                continue
+            metadata = payload.get("memoryhub_compaction")
+            if isinstance(metadata, dict) and metadata.get("phase") == "pre":
+                return metadata
+        return None
+
     def capture_hook(self, event_type: str, actor: str, payload: dict[str, Any]) -> str:
         self.initialize()
         workspace = self.ensure_workspace(payload_cwd(payload))
@@ -410,9 +465,50 @@ class MemoryStore:
         elif event_type == "tool":
             tool = payload.get("tool_name") or payload.get("tool") or "tool"
             text = f"{tool}: {payload.get('tool_response') or payload.get('output') or ''}"
-        elif event_type == "pre-compact":
-            text = str(payload.get("transcript_path") or "context compaction")
         task_id = str(task["id"]) if task else None
+        event_payload = dict(payload)
+        if event_type == "pre-compact":
+            snapshot = self.compaction_snapshot(workspace["id"], task_id)
+            snapshot_id = f"cmp_{uuid.uuid4().hex}"
+            event_payload["memoryhub_compaction"] = {
+                "phase": "pre",
+                "snapshot_id": snapshot_id,
+                "snapshot_hash": self._snapshot_hash(snapshot),
+                "snapshot": snapshot,
+            }
+            text = (
+                f"compaction snapshot {snapshot_id}; task={task_id or 'none'}; "
+                f"next={snapshot.get('next_action') or 'not set'}"
+            )
+        elif event_type == "post-compact":
+            previous = self._latest_pre_compaction(
+                actor=actor,
+                current_session_id=current_session_id,
+                workspace_id=workspace["id"],
+            )
+            current = self.compaction_snapshot(workspace["id"], task_id)
+            current_hash = self._snapshot_hash(current)
+            expected_hash = str(previous.get("snapshot_hash", "")) if previous else ""
+            verified = bool(previous and expected_hash == current_hash)
+            reason = (
+                "snapshot-restored"
+                if verified
+                else "missing-pre-snapshot"
+                if previous is None
+                else "operational-memory-changed"
+            )
+            event_payload["memoryhub_compaction"] = {
+                "phase": "post",
+                "snapshot_id": previous.get("snapshot_id") if previous else None,
+                "expected_hash": expected_hash,
+                "actual_hash": current_hash,
+                "verified": verified,
+                "reason": reason,
+            }
+            text = (
+                f"compaction verification: {reason}; "
+                f"task={task_id or 'none'}"
+            )
         self.bind_session(
             current_session_id,
             actor,
@@ -427,9 +523,86 @@ class MemoryStore:
             workspace_id=workspace["id"],
             task_id=task_id,
             content_text=text,
-            payload=payload,
+            payload=event_payload,
         )
         return self.render_context(cwd=workspace["path"], task_id=task_id)
+
+    def compaction_report(
+        self, *, cwd: str | Path | None = None, all_workspaces: bool = False
+    ) -> dict[str, Any]:
+        self.initialize()
+        workspace = self.ensure_workspace(cwd)
+        query = """
+            SELECT at, type, actor, session_id, workspace_id, task_id, content_json
+            FROM events WHERE type IN ('pre-compact', 'post-compact')
+        """
+        params: tuple[Any, ...] = ()
+        if not all_workspaces:
+            query += " AND workspace_id=?"
+            params = (workspace["id"],)
+        query += " ORDER BY at"
+        with self.connect() as db:
+            rows = db.execute(query, params).fetchall()
+
+        snapshots: dict[str, dict[str, Any]] = {}
+        malformed = 0
+        legacy = 0
+        for row in rows:
+            try:
+                payload = json.loads(str(row["content_json"]))
+            except json.JSONDecodeError:
+                malformed += 1
+                continue
+            if "memoryhub_compaction" not in payload:
+                legacy += 1
+                continue
+            metadata = payload.get("memoryhub_compaction")
+            if not isinstance(metadata, dict):
+                malformed += 1
+                continue
+            snapshot_id = metadata.get("snapshot_id")
+            if not snapshot_id:
+                malformed += 1
+                continue
+            entry = snapshots.setdefault(
+                str(snapshot_id),
+                {
+                    "snapshot_id": str(snapshot_id),
+                    "actor": str(row["actor"]),
+                    "session_id": str(row["session_id"]),
+                    "workspace_id": str(row["workspace_id"]),
+                    "task_id": row["task_id"],
+                    "pre_at": None,
+                    "post_at": None,
+                    "verified": None,
+                    "reason": None,
+                },
+            )
+            if row["type"] == "pre-compact":
+                entry["pre_at"] = str(row["at"])
+            else:
+                entry["post_at"] = str(row["at"])
+                entry["verified"] = bool(metadata.get("verified"))
+                entry["reason"] = metadata.get("reason")
+
+        values = list(snapshots.values())
+        paired = sum(bool(item["pre_at"] and item["post_at"]) for item in values)
+        verified = sum(item["verified"] is True for item in values)
+        failed = sum(item["post_at"] is not None and item["verified"] is not True for item in values)
+        pending = sum(item["pre_at"] is not None and item["post_at"] is None for item in values)
+        return {
+            "ok": failed == 0 and malformed == 0,
+            "snapshots": values,
+            "counts": {
+                "total": len(values),
+                "paired": paired,
+                "verified": verified,
+                "pending": pending,
+                "failed": failed,
+                "malformed": malformed,
+                "legacy": legacy,
+            },
+        }
 
     def get_task(self, task_id: str) -> sqlite3.Row | None:
         with self.connect() as db:

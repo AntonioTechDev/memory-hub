@@ -16,6 +16,23 @@
 | P10 | Idempotency | repeated events/install do not duplicate |
 | P11 | Portability | Git remote identity survives a path move |
 | P12 | Handoff validity | explicit status requires a concrete next action |
+| P13 | Compaction snapshot | task state is hashed durably before compaction |
+| P14 | Post-compact recovery | same state is verified and reinjected afterward |
+| P15 | Compaction honesty | mutation between hooks is reported as failure |
+
+## Codex-to-Claude delegation gates
+
+| ID | Gate | Pass condition |
+|---|---|---|
+| D1 | Skill contract | official skill validator passes; installer is idempotent |
+| D2 | Real worker | authenticated Claude edits only the allowed file and returns schema-valid JSON |
+| D3 | Sequential lock | a second worker in one workspace fails immediately |
+| D4 | Hard timeout | a `SIGTERM`-ignoring worker is killed and reaped |
+| D5 | Descendant cleanup | a successful parent cannot leak a background child |
+| D6 | Malformed/failure | invalid JSON and nonzero exits fail closed |
+| D7 | Scope enforcement | out-of-contract paths cannot produce success |
+| D8 | Continuity | every outcome creates a redacted Memory Hub checkpoint |
+| D9 | Final ownership | Codex independently reviews diff and reruns validation |
 
 ## Phase 2 gates
 
@@ -54,6 +71,7 @@ python3 scripts/run_foolproof_eval.py --events 500
 python3 scripts/run_local_stress.py --events 2000 --workers 48
 python3 -m compileall -q memoryhub scripts tests
 memoryhub brain-doctor --deep
+memoryhub compaction-doctor
 ```
 
 Live gates, when both subscription CLIs have quota:

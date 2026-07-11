@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -24,6 +25,7 @@ This machine uses Memory Hub as the shared operational memory for coding agents.
 - Before ending meaningful work, call the MCP tool `memory_checkpoint` with objective, summary, exact next action, decisions, blockers, files and validation evidence.
 - Never persist credentials, tokens, private keys, cookies or raw `.env` values.
 - An agent turn is not handed off correctly when the next action is missing or vague.
+- When Codex delegates coding work to Claude, it must use the installed `$delegate-to-claude` skill and its adapter; never invoke the raw `claude` CLI for that workflow.
 {END_MARKER}
 """
 
@@ -63,6 +65,7 @@ def merge_hooks(path: Path, binary: Path, actor: str) -> bool:
         "PostToolUse": "tool",
         "Stop": "stop",
         "PreCompact": "pre-compact",
+        "PostCompact": "post-compact",
     }
     changed = False
     for external_name, internal_name in event_names.items():
@@ -131,6 +134,49 @@ raise SystemExit(main())
     return app_dir, binary
 
 
+def _tree_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    for item in sorted(candidate for candidate in path.rglob("*") if candidate.is_file()):
+        digest.update(str(item.relative_to(path)).encode("utf-8"))
+        digest.update(item.read_bytes())
+    return digest.hexdigest()
+
+
+def install_codex_delegation_skill(target_home: Path) -> dict[str, Any]:
+    source = Path(__file__).resolve().parent / "assets" / "delegate-to-claude"
+    if not (source / "SKILL.md").is_file():
+        raise ValueError(f"bundled delegation skill is missing: {source}")
+    target = target_home / ".codex" / "skills" / "delegate-to-claude"
+    changed = not target.is_dir() or _tree_hash(source) != _tree_hash(target)
+    backup_path: Path | None = None
+    if changed and target.exists():
+        backup_path = target.with_name(
+            f"{target.name}.memoryhub-backup-{timestamp()}"
+        )
+        counter = 1
+        while backup_path.exists():
+            backup_path = target.with_name(
+                f"{target.name}.memoryhub-backup-{timestamp()}-{counter}"
+            )
+            counter += 1
+        if target.is_dir():
+            shutil.copytree(target, backup_path)
+            shutil.rmtree(target)
+        else:
+            shutil.copy2(target, backup_path)
+            target.unlink()
+    if changed:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, target)
+        (target / "scripts" / "delegate.py").chmod(0o755)
+    return {
+        "path": str(target),
+        "changed": changed,
+        "backup": str(backup_path) if backup_path else None,
+        "sha256": _tree_hash(target),
+    }
+
+
 def run_agent_commands(binary: Path, target_home: Path) -> list[str]:
     notes: list[str] = []
     env = {**os.environ, "HOME": str(target_home), "CODEX_HOME": str(target_home / ".codex")}
@@ -197,12 +243,14 @@ def install(target_home: Path, *, configure_agents: bool = True) -> dict[str, An
         "codex_instructions": merge_instructions(target_home / ".codex" / "AGENTS.md"),
         "claude_instructions": merge_instructions(target_home / ".claude" / "CLAUDE.md"),
     }
+    delegation_skill = install_codex_delegation_skill(target_home)
     notes = run_agent_commands(binary, target_home) if configure_agents else []
     return {
         "app_dir": str(app_dir),
         "binary": str(binary),
         "database": str(target_home / ".local" / "share" / "memoryhub" / "memory.db"),
         "changed": changed,
+        "delegation_skill": delegation_skill,
         "notes": notes,
     }
 
