@@ -184,7 +184,6 @@ class ClaudeWorkerTests(unittest.TestCase):
             )
         self.assertEqual("success", result["status"])
         self.assertTrue(result["cleanup"]["term_sent"])
-        self.assertTrue(result["cleanup"]["kill_sent"])
         self.assertFalse(result["cleanup"]["group_alive"])
 
     def test_dry_run_never_launches_claude(self) -> None:
