@@ -38,6 +38,7 @@ class RealAgentEvalRunnerTests(unittest.TestCase):
             self.assertTrue((workspace / ".codex" / "config.toml").is_file())
             self.assertTrue((workspace / ".claude" / "settings.json").is_file())
             self.assertTrue((workspace / "memoryhub" / "core.py").is_file())
+            self.assertTrue((workspace / ".memoryhub-eval-bin" / "memoryhub").is_file())
             self.assertTrue((workspace / ".git").is_dir())
 
     def test_exact_token_scoring_reports_missing_items(self) -> None:

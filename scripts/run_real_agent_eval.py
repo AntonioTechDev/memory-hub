@@ -17,6 +17,10 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from memoryhub.install import merge_hooks  # noqa: E402
+
 DEFAULT_ORACLE = ROOT / "evals" / "real-agent-oracle.json"
 BACKEND_ENV_KEYS = {
     "AGENT_MEMORY_BACKEND",
@@ -67,8 +71,19 @@ def prepare_workspace(destination: Path, project_id: str) -> None:
     for directory in (".codex", ".claude"):
         (destination / directory).mkdir(parents=True, exist_ok=True)
     shutil.copytree(ROOT / "memoryhub", destination / "memoryhub")
-    shutil.copy2(ROOT / ".codex" / "hooks.json", destination / ".codex" / "hooks.json")
-    shutil.copy2(ROOT / ".claude" / "settings.json", destination / ".claude" / "settings.json")
+    launcher = destination / ".memoryhub-eval-bin" / "memoryhub"
+    launcher.parent.mkdir(parents=True, exist_ok=True)
+    launcher.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        f"sys.path.insert(0, {str(destination)!r})\n"
+        "from memoryhub.cli import main\n"
+        "raise SystemExit(main())\n",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+    merge_hooks(destination / ".codex" / "hooks.json", launcher, "codex")
+    merge_hooks(destination / ".claude" / "settings.json", launcher, "claude-code")
     (destination / ".codex" / "config.toml").write_text(
         "[features]\nhooks = true\n", encoding="utf-8"
     )
