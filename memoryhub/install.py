@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+START_MARKER = "<!-- memoryhub:managed:start -->"
+END_MARKER = "<!-- memoryhub:managed:end -->"
+
+INSTRUCTIONS = f"""{START_MARKER}
+## Local operational memory
+
+This machine uses Memory Hub as the shared operational memory for coding agents.
+
+- Treat context injected at session start as an index, not ground truth. Verify it against the current user instruction, files, Git and tests.
+- When continuing work, use the injected task ID. If the task is ambiguous, call `memory_tasks` and then `memory_resume`.
+- Before ending meaningful work, call the MCP tool `memory_checkpoint` with objective, summary, exact next action, decisions, blockers, files and validation evidence.
+- Never persist credentials, tokens, private keys, cookies or raw `.env` values.
+- An agent turn is not handed off correctly when the next action is missing or vague.
+{END_MARKER}
+"""
+
+
+def timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def backup(path: Path) -> Path | None:
+    if not path.exists():
+        return None
+    target = path.with_name(f"{path.name}.memoryhub-backup-{timestamp()}")
+    shutil.copy2(path, target)
+    return target
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise ValueError(f"expected a JSON object: {path}")
+    return value
+
+
+def hook_command(binary: Path, event: str, actor: str) -> str:
+    return f"{shlex.quote(str(binary))} hook --event {event} --actor {actor}"
+
+
+def merge_hooks(path: Path, binary: Path, actor: str) -> bool:
+    config = load_json(path)
+    hooks = config.setdefault("hooks", {})
+    event_names = {
+        "SessionStart": "session-start",
+        "UserPromptSubmit": "user-prompt",
+        "PostToolUse": "tool",
+        "Stop": "stop",
+        "PreCompact": "pre-compact",
+    }
+    changed = False
+    for external_name, internal_name in event_names.items():
+        entries = hooks.setdefault(external_name, [])
+        command = hook_command(binary, internal_name, actor)
+        already_present = any(
+            "memoryhub" in str(handler.get("command", ""))
+            and f"--event {internal_name}" in str(handler.get("command", ""))
+            for group in entries
+            if isinstance(group, dict)
+            for handler in group.get("hooks", [])
+            if isinstance(handler, dict)
+        )
+        if already_present:
+            continue
+        group: dict[str, Any] = {
+            "hooks": [{"type": "command", "command": command, "timeout": 5}]
+        }
+        if external_name == "SessionStart":
+            group["matcher"] = "startup|resume|compact"
+            group["hooks"][0]["statusMessage"] = "Loading local operational memory"
+        entries.append(group)
+        changed = True
+    if changed:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        backup(path)
+        path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return changed
+
+
+def merge_instructions(path: Path) -> bool:
+    current = path.read_text(encoding="utf-8") if path.exists() else ""
+    if START_MARKER in current and END_MARKER in current:
+        before, remainder = current.split(START_MARKER, 1)
+        _, after = remainder.split(END_MARKER, 1)
+        updated = before.rstrip() + "\n\n" + INSTRUCTIONS + after.lstrip("\n")
+    else:
+        updated = current.rstrip() + ("\n\n" if current.strip() else "") + INSTRUCTIONS
+    if updated == current:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup(path)
+    path.write_text(updated, encoding="utf-8")
+    return True
+
+
+def copy_application(repo_root: Path, target_home: Path) -> tuple[Path, Path]:
+    app_dir = target_home / ".local" / "share" / "memoryhub" / "app"
+    binary = target_home / ".local" / "bin" / "memoryhub"
+    if app_dir.exists():
+        shutil.rmtree(app_dir)
+    app_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(repo_root / "memoryhub", app_dir / "memoryhub")
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    installed_memory_home = target_home / ".local" / "share" / "memoryhub"
+    launcher = f"""#!/usr/bin/env python3
+import os
+import sys
+os.environ.setdefault("MEMORYHUB_HOME", {str(installed_memory_home)!r})
+sys.path.insert(0, {str(app_dir)!r})
+from memoryhub.cli import main
+raise SystemExit(main())
+"""
+    binary.write_text(launcher, encoding="utf-8")
+    binary.chmod(0o755)
+    return app_dir, binary
+
+
+def run_agent_commands(binary: Path, target_home: Path) -> list[str]:
+    notes: list[str] = []
+    env = {**os.environ, "HOME": str(target_home), "CODEX_HOME": str(target_home / ".codex")}
+    if shutil.which("codex"):
+        commands = [
+            ["codex", "features", "enable", "hooks"],
+            ["codex", "mcp", "remove", "memoryhub"],
+            ["codex", "mcp", "add", "memoryhub", "--", str(binary), "mcp"],
+        ]
+        for index, command in enumerate(commands):
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            if result.returncode and index != 1:
+                notes.append(f"Codex command failed: {' '.join(command)}: {result.stderr.strip()}")
+    else:
+        notes.append("Codex not found; MCP registration skipped")
+
+    if shutil.which("claude"):
+        subprocess.run(
+            ["claude", "mcp", "remove", "--scope", "user", "memoryhub"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        command = [
+            "claude",
+            "mcp",
+            "add",
+            "--scope",
+            "user",
+            "memoryhub",
+            "--",
+            str(binary),
+            "mcp",
+        ]
+        result = subprocess.run(command, env=env, capture_output=True, text=True)
+        if result.returncode:
+            notes.append(f"Claude command failed: {' '.join(command)}: {result.stderr.strip()}")
+    else:
+        notes.append("Claude Code not found; MCP registration skipped")
+    return notes
+
+
+def install(target_home: Path, *, configure_agents: bool = True) -> dict[str, Any]:
+    repo_root = Path(__file__).resolve().parents[1]
+    target_home = target_home.expanduser().resolve()
+    app_dir, binary = copy_application(repo_root, target_home)
+    env_before = os.environ.get("MEMORYHUB_HOME")
+    os.environ["MEMORYHUB_HOME"] = str(target_home / ".local" / "share" / "memoryhub")
+    try:
+        from .core import MemoryStore
+
+        MemoryStore().initialize()
+    finally:
+        if env_before is None:
+            os.environ.pop("MEMORYHUB_HOME", None)
+        else:
+            os.environ["MEMORYHUB_HOME"] = env_before
+
+    changed = {
+        "codex_hooks": merge_hooks(target_home / ".codex" / "hooks.json", binary, "codex"),
+        "claude_hooks": merge_hooks(
+            target_home / ".claude" / "settings.json", binary, "claude-code"
+        ),
+        "codex_instructions": merge_instructions(target_home / ".codex" / "AGENTS.md"),
+        "claude_instructions": merge_instructions(target_home / ".claude" / "CLAUDE.md"),
+    }
+    notes = run_agent_commands(binary, target_home) if configure_agents else []
+    return {
+        "app_dir": str(app_dir),
+        "binary": str(binary),
+        "database": str(target_home / ".local" / "share" / "memoryhub" / "memory.db"),
+        "changed": changed,
+        "notes": notes,
+    }
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description="Install Memory Hub locally for this user.")
+    result.add_argument("--target-home", default=str(Path.home()))
+    result.add_argument(
+        "--skip-agent-commands",
+        action="store_true",
+        help="Do not invoke codex/claude MCP registration commands",
+    )
+    result.add_argument("--json", action="store_true")
+    return result
+
+
+def main() -> int:
+    args = parser().parse_args()
+    result = install(
+        Path(args.target_home), configure_agents=not args.skip_agent_commands
+    )
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(f"Memory Hub installed: {result['binary']}")
+        print(f"Local database: {result['database']}")
+        print("Network: disabled (SQLite + MCP stdio only)")
+        for note in result["notes"]:
+            print(f"WARNING: {note}")
+        print(f"Run: {result['binary']} doctor --target-home {args.target_home}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

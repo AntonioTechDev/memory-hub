@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "claude_to_codex",
+      "source": "claude-code",
+      "target": "codex",
+      "project_id": "eval-c2x-phoenix",
+      "checkpoint": {
+        "status": "in_progress",
+        "objective": "Ripristinare il servizio Phoenix dopo il failover C2X-731",
+        "summary": "La replica C2X-NODE-41 è promossa; il DNS è ancora sul nodo precedente",
+        "next_action": "Aggiornare phoenix.internal a 10.73.1.41",
+        "blocker": "Attesa finestra DNS C2X-WINDOW-09",
+        "decisions": [
+          "C2X-DEC-01 runtime Node 22",
+          "C2X-DEC-02 porta health 9443",
+          "C2X-DEC-03 database phoenix_prod",
+          "C2X-DEC-04 TTL DNS 60 secondi",
+          "C2X-DEC-05 rollback playbook DR-17"
+        ],
+        "validation": "C2X-CHECK PostgreSQL promotion passed"
+      },
+      "expected_tokens": [
+        "C2X-731",
+        "C2X-NODE-41",
+        "10.73.1.41",
+        "C2X-WINDOW-09",
+        "C2X-DEC-01",
+        "C2X-DEC-02",
+        "C2X-DEC-03",
+        "C2X-DEC-04",
+        "C2X-DEC-05",
+        "C2X-CHECK"
+      ]
+    },
+    {
+      "id": "codex_to_claude",
+      "source": "codex",
+      "target": "claude-code",
+      "project_id": "eval-x2c-atlas",
+      "checkpoint": {
+        "status": "blocked",
+        "objective": "Completare la migrazione Atlas X2C-884",
+        "summary": "Schema X2C-SCHEMA-12 applicato in staging; produzione non toccata",
+        "next_action": "Eseguire make deploy-atlas-production",
+        "blocker": "Manca change ticket X2C-CHG-552",
+        "decisions": [
+          "X2C-DEC-01 usare PostgreSQL 17",
+          "X2C-DEC-02 mantenere compatibilità API v3",
+          "X2C-DEC-03 timeout migrazione 90 secondi",
+          "X2C-DEC-04 rollback tag atlas-v4.2.1",
+          "X2C-DEC-05 log in journalctl atlas-api"
+        ],
+        "validation": "X2C-CHECK staging smoke test passed"
+      },
+      "expected_tokens": [
+        "X2C-884",
+        "X2C-SCHEMA-12",
+        "make deploy-atlas-production",
+        "X2C-CHG-552",
+        "X2C-DEC-01",
+        "X2C-DEC-02",
+        "X2C-DEC-03",
+        "X2C-DEC-04",
+        "X2C-DEC-05",
+        "X2C-CHECK"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+[Unit]
+Description=TencentDB Agent Memory Gateway for Automa agents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=automa
+Group=automa
+WorkingDirectory=/opt/TencentDB-Agent-Memory
+EnvironmentFile=/etc/automa/agent-memory.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env npx tsx src/gateway/server.ts
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/automa-agent-memory
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+.agent-memory/
+.claude/
+.codex/
+__pycache__/
+*.pyc
+.env
+*.db
+*.db-wal
+*.db-shm
+.coverage
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+*.egg-info/
+evals/latest-*.json

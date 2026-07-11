@@ -1,0 +1,33 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8420,
+    "apiKey": "${TDAI_GATEWAY_API_KEY}",
+    "corsOrigins": []
+  },
+  "data": {
+    "baseDir": "${TDAI_DATA_DIR}"
+  },
+  "memory": {
+    "capture": {
+      "enabled": true,
+      "l0l1RetentionDays": 90
+    },
+    "extraction": {
+      "enabled": false
+    },
+    "embedding": {
+      "enabled": false,
+      "provider": "none"
+    },
+    "recall": {
+      "enabled": true,
+      "strategy": "keyword",
+      "maxResults": 5,
+      "maxTotalRecallChars": 8000
+    },
+    "offload": {
+      "enabled": false
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "graph": {
+    "project_id": "prj-example",
+    "query": "ExampleProject",
+    "expected": {
+      "GRAPH_NODE": "ExampleProject",
+      "GRAPH_NODES": "1",
+      "GRAPH_EDGES": "0",
+      "GRAPH_LINKS": "1"
+    }
+  },
+  "search": {
+    "project_id": "machine-map",
+    "query": "LLM Wiki service port",
+    "expected": {
+      "PORT": "19828",
+      "SEARCH_PATH": "wiki/example.md"
+    }
+  }
+}
