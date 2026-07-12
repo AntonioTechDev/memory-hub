@@ -4,7 +4,7 @@ Memory Hub is a local, provider-neutral continuity layer for coding agents.
 Claude Code, Codex and future MCP-compatible clients share the same operational
 task state, while an existing LLM Wiki remains the source of project knowledge.
 
-The current release (`0.3.1`) provides three deliberately separate layers:
+The current release (`0.4.0`) provides three deliberately separate layers:
 
 - **Phase 1 — operational continuity:** prompts, recent events and structured
   handoffs are stored in one private SQLite database for the local user;
@@ -54,6 +54,8 @@ objective, decisions, blockers, validation evidence and one exact next action
 through the `memory_checkpoint` MCP tool. Equivalent CLI commands are:
 
 ```bash
+memoryhub activity
+memoryhub timeline --today
 memoryhub tasks --all
 memoryhub context
 memoryhub checkpoint \
@@ -64,6 +66,11 @@ memoryhub checkpoint \
 memoryhub resume task_0123456789abcdef
 memoryhub compaction-doctor
 ```
+
+Use `memoryhub activity` as the control tower for recent Codex and Claude
+sessions. Use `memoryhub timeline` to reconstruct who did what, when and in
+which workspace. `memoryhub cleanup --dry-run --stale 10d` reports stale
+sessions and dirty tasks without deleting anything.
 
 Stored memory is an index, not ground truth. Current user instructions, files,
 Git and tests always take precedence.

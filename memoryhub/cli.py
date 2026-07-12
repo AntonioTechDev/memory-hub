@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .core import MemoryStore, redact
+from .core import MemoryStore, iso_before, parse_duration_seconds, redact, today_start
 
 
 def read_payload() -> dict[str, Any]:
@@ -126,6 +126,123 @@ def cmd_tasks(args: argparse.Namespace) -> int:
         print(
             f"{task['id']}\t{task['status']}\t{task['workspace_name']}\t"
             f"{task['title']}\t{task['updated_at']}"
+        )
+    return 0
+
+
+def short(value: Any, width: int = 72) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= width:
+        return text
+    return text[: max(0, width - 3)] + "..."
+
+
+def age_label(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def time_label(value: Any) -> str:
+    return str(value or "").replace("T", " ")[:19]
+
+
+def cmd_activity(args: argparse.Namespace) -> int:
+    store = store_from_args(args)
+    rows = store.activity(
+        cwd=args.cwd,
+        limit=args.limit,
+        stale_seconds=parse_duration_seconds(args.stale_after),
+    )
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+    if not rows:
+        print("No agent sessions found.")
+        return 0
+    print("Agent activity")
+    print("STATE   AGE   AGENT        WORKSPACE             TASK                   STATUS       NEXT")
+    for row in rows:
+        warning = f" WARN:{','.join(row['warnings'])}" if row.get("warnings") else ""
+        task = row.get("task_title") or row.get("task_id") or "-"
+        print(
+            f"{row['state']:<7} {age_label(int(row['age_seconds'])):<5} "
+            f"{short(row['actor'], 11):<12} {short(row['workspace_name'], 21):<21} "
+            f"{short(task, 22):<22} {short(row['task_status'], 11):<11} "
+            f"{short(row['next_action'] or row['last_event_text'], args.width)}{warning}"
+        )
+    return 0
+
+
+def timeline_since(args: argparse.Namespace) -> str | None:
+    if args.today:
+        return today_start()
+    if not args.since:
+        return None
+    try:
+        return iso_before(parse_duration_seconds(args.since))
+    except ValueError:
+        return str(args.since)
+
+
+def cmd_timeline(args: argparse.Namespace) -> int:
+    rows = store_from_args(args).timeline(
+        cwd=args.cwd,
+        agent=args.agent,
+        task_id=args.task_id,
+        since=timeline_since(args),
+        limit=args.limit,
+    )
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+    if not rows:
+        print("No timeline events found.")
+        return 0
+    print("Timeline")
+    print("TIME                  AGENT        EVENT         WORKSPACE             TASK        DETAIL")
+    for row in rows:
+        print(
+            f"{time_label(row['at']):<20} {short(row['actor'], 11):<12} "
+            f"{short(row['type'], 12):<13} {short(row['workspace_name'], 21):<21} "
+            f"{short(row['task_id'], 10):<10} {short(row['content_text'], args.width)}"
+        )
+    return 0
+
+
+def cmd_cleanup(args: argparse.Namespace) -> int:
+    report = store_from_args(args).cleanup_report(
+        cwd=args.cwd,
+        stale_seconds=parse_duration_seconds(args.stale),
+        limit=args.limit,
+    )
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    counts = report["counts"]
+    print(f"Cleanup report (dry-run, stale>{args.stale})")
+    print(f"Stale sessions: {counts['stale_sessions']}")
+    for item in report["stale_sessions"]:
+        print(
+            f"- {item['actor']} {item['session_id']} "
+            f"{item['workspace_name']} last={item['last_event_at']} "
+            f"task={item.get('task_id') or '-'}"
+        )
+    print(f"Stale tasks: {counts['stale_tasks']}")
+    for item in report["stale_tasks"]:
+        print(
+            f"- {item['task_id']} {item['status']} {item['workspace_name']} "
+            f"updated={item['updated_at']} {short(item['title'], args.width)}"
+        )
+    print(f"Tasks missing next action: {counts['missing_next_action']}")
+    for item in report["missing_next_action"]:
+        print(
+            f"- {item['task_id']} {item['status']} {item['workspace_name']} "
+            f"{short(item['title'], args.width)}"
         )
     return 0
 
@@ -388,6 +505,41 @@ def parser() -> argparse.ArgumentParser:
     tasks.add_argument("--limit", type=int, default=20)
     tasks.add_argument("--json", action="store_true")
     tasks.set_defaults(func=cmd_tasks)
+
+    activity = commands.add_parser(
+        "activity", help="Show recent Codex/Claude sessions and their last known task state"
+    )
+    activity.add_argument("--cwd", help="Restrict the dashboard to one workspace")
+    activity.add_argument("--limit", type=int, default=20)
+    activity.add_argument("--stale-after", default="2h")
+    activity.add_argument("--width", type=int, default=72)
+    activity.add_argument("--json", action="store_true")
+    activity.set_defaults(func=cmd_activity)
+
+    timeline = commands.add_parser(
+        "timeline", help="Show a readable chronological history of agent events"
+    )
+    timeline.add_argument("--cwd", help="Restrict the timeline to one workspace")
+    timeline.add_argument("--agent")
+    timeline.add_argument("--task-id")
+    timeline_filter = timeline.add_mutually_exclusive_group()
+    timeline_filter.add_argument("--today", action="store_true")
+    timeline_filter.add_argument("--since", help="Duration like 24h/10d or an ISO timestamp")
+    timeline.add_argument("--limit", type=int, default=50)
+    timeline.add_argument("--width", type=int, default=96)
+    timeline.add_argument("--json", action="store_true")
+    timeline.set_defaults(func=cmd_timeline)
+
+    cleanup = commands.add_parser(
+        "cleanup", help="Report stale sessions/tasks without deleting anything"
+    )
+    cleanup.add_argument("--dry-run", action="store_true", default=True)
+    cleanup.add_argument("--cwd", help="Restrict the report to one workspace")
+    cleanup.add_argument("--stale", default="10d")
+    cleanup.add_argument("--limit", type=int, default=50)
+    cleanup.add_argument("--width", type=int, default=96)
+    cleanup.add_argument("--json", action="store_true")
+    cleanup.set_defaults(func=cmd_cleanup)
 
     resume = commands.add_parser("resume", help="Resume a task and print its context")
     resume.add_argument("task_id")

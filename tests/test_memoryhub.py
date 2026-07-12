@@ -176,6 +176,120 @@ class MemoryHubTests(unittest.TestCase):
         self.assertIn("workspace-one", all_tasks)
         self.assertIn("workspace-two", all_tasks)
 
+    def test_activity_shows_active_ended_and_stale_sessions(self) -> None:
+        self.cli(
+            "hook", "--event", "user-prompt", "--actor", "codex",
+            payload={
+                "event_id": "activity-prompt-1",
+                "session_id": "activity-codex",
+                "cwd": str(self.workspace),
+                "prompt": "Implement activity dashboard",
+            },
+        )
+        task_id = self.cli(
+            "checkpoint", "--actor", "codex", "--session-id", "activity-codex",
+            "--summary", "Activity dashboard staged",
+            "--next-action", "Run activity tests",
+        ).stdout.rsplit(" ", 1)[-1].strip()
+        self.cli(
+            "hook", "--event", "user-prompt", "--actor", "claude-code",
+            payload={
+                "event_id": "activity-prompt-2",
+                "session_id": "activity-claude",
+                "cwd": str(self.workspace),
+                "prompt": "Review dashboard output",
+            },
+        )
+        self.cli(
+            "hook", "--event", "stop", "--actor", "claude-code",
+            payload={
+                "event_id": "activity-stop-2",
+                "session_id": "activity-claude",
+                "cwd": str(self.workspace),
+                "last_assistant_message": "Review complete",
+            },
+        )
+
+        rows = json.loads(self.cli("activity", "--json").stdout)
+        by_session = {row["session_id"]: row for row in rows}
+        self.assertEqual("active", by_session["activity-codex"]["state"])
+        self.assertEqual(task_id, by_session["activity-codex"]["task_id"])
+        self.assertEqual("Run activity tests", by_session["activity-codex"]["next_action"])
+        self.assertEqual("ended", by_session["activity-claude"]["state"])
+
+        old = "2020-01-01T00:00:00.000+00:00"
+        with self.db() as db:
+            db.execute(
+                "UPDATE sessions SET last_event_at=? WHERE id=? AND actor=?",
+                (old, "activity-codex", "codex"),
+            )
+        stale = json.loads(self.cli("activity", "--json", "--stale-after", "1d").stdout)
+        stale_by_session = {row["session_id"]: row for row in stale}
+        self.assertEqual("stale", stale_by_session["activity-codex"]["state"])
+
+    def test_timeline_is_chronological_and_filterable(self) -> None:
+        self.cli(
+            "hook", "--event", "user-prompt", "--actor", "codex",
+            payload={
+                "event_id": "timeline-prompt",
+                "session_id": "timeline-codex",
+                "cwd": str(self.workspace),
+                "prompt": "Timeline prompt canary",
+            },
+        )
+        self.cli(
+            "hook", "--event", "tool", "--actor", "codex",
+            payload={
+                "event_id": "timeline-tool",
+                "session_id": "timeline-codex",
+                "cwd": str(self.workspace),
+                "tool_name": "pytest",
+                "tool_response": "Timeline tool canary",
+            },
+        )
+        rows = json.loads(
+            self.cli("timeline", "--agent", "codex", "--limit", "5", "--json").stdout
+        )
+        texts = [row["content_text"] for row in rows]
+        self.assertIn("Timeline prompt canary", texts)
+        self.assertIn("pytest: Timeline tool canary", texts)
+        self.assertLess(
+            texts.index("Timeline prompt canary"),
+            texts.index("pytest: Timeline tool canary"),
+        )
+        for row in rows:
+            self.assertEqual("codex", row["actor"])
+
+    def test_cleanup_dry_run_reports_stale_sessions_and_dirty_tasks(self) -> None:
+        self.cli(
+            "hook", "--event", "user-prompt", "--actor", "codex",
+            payload={
+                "event_id": "cleanup-prompt",
+                "session_id": "cleanup-session",
+                "cwd": str(self.workspace),
+                "prompt": "Cleanup stale canary",
+            },
+        )
+        old = "2020-01-01T00:00:00.000+00:00"
+        with self.db() as db:
+            db.execute(
+                "UPDATE sessions SET last_event_at=? WHERE id=? AND actor=?",
+                (old, "cleanup-session", "codex"),
+            )
+            db.execute(
+                "UPDATE tasks SET updated_at=? WHERE title=?",
+                (old, "Cleanup stale canary"),
+            )
+
+        report = json.loads(self.cli("cleanup", "--dry-run", "--stale", "10d", "--json").stdout)
+        self.assertEqual("dry-run", report["mode"])
+        self.assertGreaterEqual(report["counts"]["stale_sessions"], 1)
+        self.assertGreaterEqual(report["counts"]["stale_tasks"], 1)
+        self.assertGreaterEqual(report["counts"]["missing_next_action"], 1)
+        self.assertTrue(
+            any(item["session_id"] == "cleanup-session" for item in report["stale_sessions"])
+        )
+
     def test_foolish_cross_workspace_checkpoint_cannot_mutate_another_task(self) -> None:
         other = self.base / "other-cross"
         other.mkdir()

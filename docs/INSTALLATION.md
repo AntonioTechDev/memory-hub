@@ -8,13 +8,12 @@
 - for Phase 2/2.1, an existing LLM Wiki build whose API listens only on
   `127.0.0.1` or `localhost`.
 
-## Install operational continuity
+## Three-command install
 
 ```bash
 git clone <repository-url> memory-hub
 cd memory-hub
-./install.sh
-memoryhub doctor
+./install.sh && ~/.local/bin/memoryhub doctor
 ```
 
 The idempotent installer copies the dependency-free application to

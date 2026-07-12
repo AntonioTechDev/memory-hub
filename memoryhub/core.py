@@ -8,7 +8,7 @@ import sqlite3
 import subprocess
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -46,6 +46,38 @@ SECRET_PATTERNS = [
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def parse_duration_seconds(value: str) -> int:
+    match = re.fullmatch(r"\s*(\d+)\s*([smhdw]?)\s*", value)
+    if not match:
+        raise ValueError(f"invalid duration: {value}")
+    amount = int(match.group(1))
+    unit = match.group(2) or "s"
+    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+    return amount * multipliers[unit]
+
+
+def iso_before(seconds: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(
+        timespec="milliseconds"
+    )
+
+
+def today_start() -> str:
+    return datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).isoformat(timespec="milliseconds")
+
+
+def seconds_since(value: str) -> int:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
 
 
 def memory_home() -> Path:
@@ -800,6 +832,210 @@ Treat this as context, not ground truth. Verify against files, Git, tests and th
                     (workspace["id"], limit),
                 ).fetchall()
         return [dict(row) for row in rows]
+
+    def activity(
+        self,
+        *,
+        cwd: str | Path | None = None,
+        limit: int = 20,
+        stale_seconds: int = 7200,
+    ) -> list[dict[str, Any]]:
+        self.initialize()
+        workspace_id = self.ensure_workspace(cwd)["id"] if cwd else None
+        params: list[Any] = []
+        where = ""
+        if workspace_id:
+            where = "WHERE s.workspace_id=?"
+            params.append(workspace_id)
+        params.append(limit)
+        with self.connect() as db:
+            rows = db.execute(
+                f"""
+                SELECT
+                    s.id AS session_id,
+                    s.actor,
+                    s.started_at,
+                    s.last_event_at,
+                    s.ended_at,
+                    s.task_id,
+                    w.name AS workspace_name,
+                    w.path AS workspace_path,
+                    t.title AS task_title,
+                    t.objective,
+                    t.status AS task_status,
+                    t.summary,
+                    t.next_action,
+                    (
+                        SELECT e.type FROM events e
+                        WHERE e.actor=s.actor AND e.session_id=s.id
+                        ORDER BY e.at DESC LIMIT 1
+                    ) AS last_event_type,
+                    (
+                        SELECT e.content_text FROM events e
+                        WHERE e.actor=s.actor AND e.session_id=s.id
+                        ORDER BY e.at DESC LIMIT 1
+                    ) AS last_event_text
+                FROM sessions s
+                JOIN workspaces w ON w.id=s.workspace_id
+                LEFT JOIN tasks t ON t.id=s.task_id
+                {where}
+                ORDER BY s.last_event_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            age = seconds_since(str(item.get("last_event_at") or ""))
+            if item.get("ended_at"):
+                state = "ended"
+            elif age > stale_seconds:
+                state = "stale"
+            else:
+                state = "active"
+            warnings: list[str] = []
+            if item.get("task_status") in {"in_progress", "blocked"} and not str(item.get("next_action") or "").strip():
+                warnings.append("missing-next-action")
+            item["state"] = state
+            item["age_seconds"] = age
+            item["warnings"] = warnings
+            result.append(redact(item))
+        return result
+
+    def timeline(
+        self,
+        *,
+        cwd: str | Path | None = None,
+        agent: str | None = None,
+        task_id: str | None = None,
+        since: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        self.initialize()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if cwd:
+            workspace_id = self.ensure_workspace(cwd)["id"]
+            clauses.append("e.workspace_id=?")
+            params.append(workspace_id)
+        if agent:
+            clauses.append("e.actor=?")
+            params.append(agent)
+        if task_id:
+            clauses.append("e.task_id=?")
+            params.append(task_id)
+        if since:
+            clauses.append("e.at>=?")
+            params.append(since)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with self.connect() as db:
+            rows = db.execute(
+                f"""
+                SELECT
+                    e.at,
+                    e.type,
+                    e.actor,
+                    e.session_id,
+                    e.task_id,
+                    e.content_text,
+                    w.name AS workspace_name,
+                    w.path AS workspace_path,
+                    t.title AS task_title,
+                    t.status AS task_status
+                FROM events e
+                JOIN workspaces w ON w.id=e.workspace_id
+                LEFT JOIN tasks t ON t.id=e.task_id
+                {where}
+                ORDER BY e.at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [redact(dict(row)) for row in rows][::-1]
+
+    def cleanup_report(
+        self,
+        *,
+        cwd: str | Path | None = None,
+        stale_seconds: int = 864000,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        self.initialize()
+        cutoff = iso_before(stale_seconds)
+        task_where = "t.status IN ('in_progress', 'blocked')"
+        session_where = "s.ended_at IS NULL"
+        params_tasks: list[Any] = []
+        params_sessions: list[Any] = []
+        params_missing: list[Any] = []
+        if cwd:
+            workspace_id = self.ensure_workspace(cwd)["id"]
+            task_where += " AND t.workspace_id=?"
+            session_where += " AND s.workspace_id=?"
+            params_tasks.append(workspace_id)
+            params_sessions.append(workspace_id)
+            params_missing.append(workspace_id)
+        params_tasks.append(cutoff)
+        params_sessions.append(cutoff)
+        missing_where = "t.status IN ('in_progress', 'blocked') AND TRIM(t.next_action)=''"
+        if cwd:
+            missing_where += " AND t.workspace_id=?"
+        with self.connect() as db:
+            stale_tasks = db.execute(
+                f"""
+                SELECT t.id AS task_id, t.title, t.status, t.updated_at,
+                       t.next_action, w.name AS workspace_name, w.path AS workspace_path
+                FROM tasks t
+                JOIN workspaces w ON w.id=t.workspace_id
+                WHERE {task_where} AND t.updated_at<?
+                ORDER BY t.updated_at
+                LIMIT ?
+                """,
+                [*params_tasks, limit],
+            ).fetchall()
+            stale_sessions = db.execute(
+                f"""
+                SELECT s.id AS session_id, s.actor, s.task_id, s.last_event_at,
+                       w.name AS workspace_name, w.path AS workspace_path,
+                       t.title AS task_title
+                FROM sessions s
+                JOIN workspaces w ON w.id=s.workspace_id
+                LEFT JOIN tasks t ON t.id=s.task_id
+                WHERE {session_where} AND s.last_event_at<?
+                ORDER BY s.last_event_at
+                LIMIT ?
+                """,
+                [*params_sessions, limit],
+            ).fetchall()
+            missing_next_action = db.execute(
+                f"""
+                SELECT t.id AS task_id, t.title, t.status, t.updated_at,
+                       w.name AS workspace_name, w.path AS workspace_path
+                FROM tasks t
+                JOIN workspaces w ON w.id=t.workspace_id
+                WHERE {missing_where}
+                ORDER BY t.updated_at DESC
+                LIMIT ?
+                """,
+                [*params_missing, limit],
+            ).fetchall()
+        stale_task_items = [redact(dict(row)) for row in stale_tasks]
+        stale_session_items = [redact(dict(row)) for row in stale_sessions]
+        missing_items = [redact(dict(row)) for row in missing_next_action]
+        return {
+            "mode": "dry-run",
+            "cutoff": cutoff,
+            "stale_seconds": stale_seconds,
+            "counts": {
+                "stale_tasks": len(stale_task_items),
+                "stale_sessions": len(stale_session_items),
+                "missing_next_action": len(missing_items),
+            },
+            "stale_tasks": stale_task_items,
+            "stale_sessions": stale_session_items,
+            "missing_next_action": missing_items,
+        }
 
     def resume_task(self, task_id: str, actor: str = "human") -> None:
         timestamp = utc_now()

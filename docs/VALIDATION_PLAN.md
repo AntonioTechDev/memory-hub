@@ -19,6 +19,9 @@
 | P13 | Compaction snapshot | task state is hashed durably before compaction |
 | P14 | Post-compact recovery | same state is verified and reinjected afterward |
 | P15 | Compaction honesty | mutation between hooks is reported as failure |
+| P16 | Activity dashboard | active, stale and ended sessions are reported with task state |
+| P17 | Timeline | events are chronological and filterable by agent/task/workspace |
+| P18 | Cleanup dry-run | stale sessions/tasks are reported without deletion |
 
 ## Codex-to-Claude delegation gates
 
@@ -72,6 +75,9 @@ python3 scripts/run_local_stress.py --events 2000 --workers 48
 python3 -m compileall -q memoryhub scripts tests
 memoryhub brain-doctor --deep
 memoryhub compaction-doctor
+memoryhub activity
+memoryhub timeline --today
+memoryhub cleanup --dry-run --stale 10d
 ```
 
 Live gates, when both subscription CLIs have quota:

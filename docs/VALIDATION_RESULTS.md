@@ -2,25 +2,31 @@
 
 ## Verdict
 
-**Phases 1, 2 and 2.1 plus compaction-aware continuity and the bounded
-Codex-to-Claude worker pass all local, structural, live-agent and deployed-brain
-gates on the Automa Linux machine.** The automatic policy is canonical-only and
-the four registered brains are fresh.
+**Phases 1, 2 and 2.1 plus the 0.4.0 operational dashboard pass all local,
+structural, live-agent and deployed-brain gates on the Automa Linux machine.**
+The automatic policy is canonical-only and the four registered brains are
+fresh.
 
-The live provider gates were rerun successfully on 2026-07-12 after the 0.3.1
-installer/configuration cleanup. Claude and Codex both recovered shared
-operational memory, survived abrupt-source recovery scenarios, and retrieved
-fresh LLM Wiki graph/search facts from the same local brain.
+The 0.4.0 release adds `memoryhub activity`, `memoryhub timeline` and
+`memoryhub cleanup --dry-run` for daily operations. Live provider gates were
+rerun successfully on 2026-07-12 after the installer/configuration cleanup.
+Claude and Codex both recovered shared operational memory, survived
+abrupt-source recovery scenarios, and retrieved fresh LLM Wiki graph/search
+facts from the same local brain.
 
 ## Current automated gates
 
 | Check | Result | Evidence |
 |---|---:|---|
-| Full suite | PASS | 67/67 with `ResourceWarning` treated as error |
+| Full suite | PASS | 70/70 with `ResourceWarning` treated as error |
 | Compaction continuity | PASS | deterministic pre/post pair verified; mutation detected |
 | Compaction hook dedupe | PASS | `SessionStart` Memory Hub matcher is `startup|resume`; `PostCompact` owns reinjection |
 | Agent-specific instructions | PASS | Codex keeps `$delegate-to-claude`; Claude does not receive Codex-only rules |
 | Portable install tree | PASS | source, installed skill and app copy exclude `__pycache__` and `.pyc` artifacts |
+| Three-command install | PASS | clone, enter repo, run installer+doctor in an isolated HOME |
+| Activity dashboard | PASS | active, stale and ended sessions reported with task state |
+| Timeline | PASS | events are chronological and filterable by agent/task/workspace |
+| Cleanup dry-run | PASS | stale sessions/tasks and missing next actions reported without deletion |
 | Delegation skill | PASS | official validator; portable/idempotent install |
 | Fresh Codex skill discovery | PASS | selected the skill and wrapper once; dry-run, no raw Claude call |
 | Adversarial cleanup | PASS | timeout and leaked-child groups killed; no live residual process |
