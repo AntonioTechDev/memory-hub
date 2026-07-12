@@ -2,17 +2,21 @@
 
 ## Verdict
 
-**Phases 1, 2 and 2.1 plus the 0.4.0 operational dashboard pass all local,
-structural, live-agent and deployed-brain gates on the Automa Linux machine.**
-The automatic policy is canonical-only and the four registered brains are
-fresh.
+**Memory Hub 0.4.0 passes the local, CI, clean-install and operational
+dashboard gates on the Automa Linux machine.** The automatic branch policy
+remains canonical-only. The current headless shell could not complete the deep
+deployed-brain freshness gate because the external LLM Wiki desktop API exits
+during forced rescan; materialized source files still match canonical Git.
 
 The 0.4.0 release adds `memoryhub activity`, `memoryhub timeline` and
 `memoryhub cleanup --dry-run` for daily operations. Live provider gates were
 rerun successfully on 2026-07-12 after the installer/configuration cleanup.
 Claude and Codex both recovered shared operational memory, survived
 abrupt-source recovery scenarios, and retrieved fresh LLM Wiki graph/search
-facts from the same local brain.
+facts from the same local brain. A later headless rerun confirmed
+`wiki-doctor` can pass when the LLM Wiki app is started under a display/Xvfb,
+but the desktop API is not stable enough in this shell to complete
+`brain-sync --all --force`.
 
 ## Current automated gates
 
@@ -40,9 +44,9 @@ facts from the same local brain.
 | Alternating chat storm | PASS | 500/500 events durable |
 | Concurrent stress | PASS | 2,000/2,000 distinct writes, 48 workers |
 | Stress secrecy/integrity | PASS | zero raw leaks; SQLite `ok`; DB `0600` |
-| Latency | PASS | write p95 112.667 ms; context p95 8.056 ms |
+| Latency | PASS | write p95 136.281 ms; context p95 11.624 ms |
 | Compile check | PASS | `python3 -m compileall` |
-| Deep deployed doctor | PASS | 4/4 brains; 3,401 canonical files checked |
+| Deep deployed doctor | BLOCKED | LLM Wiki desktop API exits in headless shell during forced rescan |
 | Deep materialization | PASS | zero missing, zero mismatched |
 
 The abuse runner covers malformed and empty hook payloads, 100 duplicate
@@ -68,19 +72,23 @@ configuration, idempotent hooks and rejection of a remote LLM Wiki URL.
 
 ## Deployed canonical brains
 
-Four real Automa brains passed the deployed doctor: two use `main`, two use
-`master`, and 3,401 eligible files were compared. Two repositories were
-deliberately left on non-canonical working branches during the audit; their
-materialized sources still matched canonical Git rather than the checkout.
-Each freshness canary is visible through LLM Wiki file, search and graph APIs;
-queues are empty. Deployment-specific IDs, paths and commit hashes remain only
-in the ignored local evaluation reports and are not part of the portable repo.
+Four real Automa brains are registered: two use `main`, two use `master`, and
+3,401 eligible files were compared during the latest deep materialization
+check. Two repositories were deliberately left on non-canonical working
+branches during the audit; their materialized sources still matched canonical
+Git rather than the checkout. In the current headless shell, the LLM Wiki
+desktop API starts and passes `wiki-doctor`, then exits during
+`memoryhub brain-sync --all --force`, so file/search/graph freshness evidence is
+currently blocked by the external app runtime rather than by Memory Hub
+materialization. Deployment-specific IDs, paths and commit hashes remain only in
+the ignored local evaluation reports and are not part of the portable repo.
 
 Automation installed on the machine:
 
 - one idempotent post-commit hook per registered repository;
 - one 15-minute `memoryhub brain-sync --all` cron fallback;
-- only one LLM Wiki listener on `127.0.0.1:19828`.
+- LLM Wiki is expected to expose one listener on `127.0.0.1:19828` while the
+  desktop app is running.
 
 ## Real-agent evidence
 
@@ -111,5 +119,7 @@ deployment-specific project IDs, paths, commit hashes and model output.
 ## Remaining scope limits
 
 - macOS and Windows clean-machine certification has not been run;
+- LLM Wiki freshness gates require the desktop API to stay running; this
+  headless shell could not keep the Tauri app alive during forced rescan;
 - remote multi-machine memory is intentionally not implemented;
 - Phase 3 intelligent semantic memory remains a future product decision.
