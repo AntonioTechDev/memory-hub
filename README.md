@@ -4,7 +4,7 @@ Memory Hub is a local, provider-neutral continuity layer for coding agents.
 Claude Code, Codex and future MCP-compatible clients share the same operational
 task state, while an existing LLM Wiki remains the source of project knowledge.
 
-The current release (`0.3.0`) provides three deliberately separate layers:
+The current release (`0.3.1`) provides three deliberately separate layers:
 
 - **Phase 1 — operational continuity:** prompts, recent events and structured
   handoffs are stored in one private SQLite database for the local user;

@@ -300,14 +300,24 @@ class MemoryHubTests(unittest.TestCase):
         ]
         self.assertEqual(1, len([command for command in commands if "memoryhub" in command]))
         codex_agents = (self.home / ".codex" / "AGENTS.md").read_text(encoding="utf-8")
+        claude_agents = (self.home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
         self.assertEqual(1, codex_agents.count(START_MARKER))
         self.assertEqual(1, codex_agents.count(END_MARKER))
+        self.assertEqual(1, claude_agents.count(START_MARKER))
+        self.assertEqual(1, claude_agents.count(END_MARKER))
         self.assertFalse(second["delegation_skill"]["changed"])
         skill = self.home / ".codex" / "skills" / "delegate-to-claude"
         self.assertTrue((skill / "SKILL.md").is_file())
         self.assertTrue((skill / "scripts" / "delegate.py").is_file())
+        self.assertFalse(any(item.name == "__pycache__" for item in skill.rglob("*")))
+        self.assertFalse(any(item.suffix == ".pyc" for item in skill.rglob("*")))
+        app_dir = Path(first["app_dir"])
+        self.assertFalse(any(item.name == "__pycache__" for item in app_dir.rglob("*")))
+        self.assertFalse(any(item.suffix == ".pyc" for item in app_dir.rglob("*")))
         self.assertIn("PostCompact", config["hooks"])
         self.assertIn("$delegate-to-claude", codex_agents)
+        self.assertNotIn("$delegate-to-claude", claude_agents)
+        self.assertNotIn("compact", str(config["hooks"]["SessionStart"]))
         delegated = subprocess.run(
             [
                 sys.executable, str(skill / "scripts" / "delegate.py"),
@@ -320,6 +330,42 @@ class MemoryHubTests(unittest.TestCase):
             check=True,
         )
         self.assertEqual("dry-run", json.loads(delegated.stdout)["status"])
+
+    def test_installer_migrates_legacy_compact_session_start_hook(self) -> None:
+        install(self.home, configure_agents=False)
+        settings = self.home / ".claude" / "settings.json"
+        config = json.loads(settings.read_text(encoding="utf-8"))
+        config["hooks"]["SessionStart"][0]["matcher"] = "startup|resume|compact"
+        settings.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        install(self.home, configure_agents=False)
+
+        migrated = json.loads(settings.read_text(encoding="utf-8"))
+        matchers = [
+            group.get("matcher", "")
+            for group in migrated["hooks"]["SessionStart"]
+            if any(
+                "memoryhub" in handler.get("command", "")
+                for handler in group.get("hooks", [])
+            )
+        ]
+        self.assertEqual(["startup|resume"], matchers)
+
+    def test_installer_removes_ignored_skill_artifacts(self) -> None:
+        install(self.home, configure_agents=False)
+        artifact = (
+            self.home / ".codex" / "skills" / "delegate-to-claude" /
+            "scripts" / "__pycache__" / "delegate.cpython-999.pyc"
+        )
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b"bytecode")
+
+        result = install(self.home, configure_agents=False)
+
+        self.assertTrue(result["delegation_skill"]["changed"])
+        skill = self.home / ".codex" / "skills" / "delegate-to-claude"
+        self.assertFalse(any(item.name == "__pycache__" for item in skill.rglob("*")))
+        self.assertFalse(any(item.suffix == ".pyc" for item in skill.rglob("*")))
 
     def test_compaction_snapshot_is_verified_and_reinjected(self) -> None:
         self.cli(

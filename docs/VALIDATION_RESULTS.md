@@ -1,4 +1,4 @@
-# Validation results — 2026-07-11
+# Validation results — 2026-07-12
 
 ## Verdict
 
@@ -16,8 +16,11 @@ also passed on both Claude and Codex before the quota was exhausted.
 
 | Check | Result | Evidence |
 |---|---:|---|
-| Full suite | PASS | 65/65 with `ResourceWarning` treated as error |
+| Full suite | PASS | 67/67 with `ResourceWarning` treated as error |
 | Compaction continuity | PASS | deterministic pre/post pair verified; mutation detected |
+| Compaction hook dedupe | PASS | `SessionStart` Memory Hub matcher is `startup|resume`; `PostCompact` owns reinjection |
+| Agent-specific instructions | PASS | Codex keeps `$delegate-to-claude`; Claude does not receive Codex-only rules |
+| Portable install tree | PASS | source, installed skill and app copy exclude `__pycache__` and `.pyc` artifacts |
 | Delegation skill | PASS | official validator; portable/idempotent install |
 | Fresh Codex skill discovery | PASS | selected the skill and wrapper once; dry-run, no raw Claude call |
 | Adversarial cleanup | PASS | timeout and leaked-child groups killed; no live residual process |
