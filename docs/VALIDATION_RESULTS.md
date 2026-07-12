@@ -3,14 +3,14 @@
 ## Verdict
 
 **Phases 1, 2 and 2.1 plus compaction-aware continuity and the bounded
-Codex-to-Claude worker pass all local, structural and deployed-brain gates on
-the Automa Linux machine.** The automatic policy is canonical-only and the four
-registered brains are fresh.
+Codex-to-Claude worker pass all local, structural, live-agent and deployed-brain
+gates on the Automa Linux machine.** The automatic policy is canonical-only and
+the four registered brains are fresh.
 
-One final repeat of the old bidirectional live Phase 1 runner is currently
-**blocked by the Codex CLI subscription quota**, not by an assertion or product
-error. Earlier release-code live runs passed; the newer Phase 2.1 provider gate
-also passed on both Claude and Codex before the quota was exhausted.
+The live provider gates were rerun successfully on 2026-07-12 after the 0.3.1
+installer/configuration cleanup. Claude and Codex both recovered shared
+operational memory, survived abrupt-source recovery scenarios, and retrieved
+fresh LLM Wiki graph/search facts from the same local brain.
 
 ## Current automated gates
 
@@ -25,11 +25,16 @@ also passed on both Claude and Codex before the quota was exhausted.
 | Fresh Codex skill discovery | PASS | selected the skill and wrapper once; dry-run, no raw Claude call |
 | Adversarial cleanup | PASS | timeout and leaked-child groups killed; no live residual process |
 | Real Claude delegation | PASS | Opus edited 1/1 allowed file; exact byte check; JSON schema valid |
+| Installed live hooks | PASS | Codex and Claude both recovered 10/10 injected global-install facts |
+| Bidirectional live handoff | PASS | Claude→Codex and Codex→Claude both scored 1.0 |
+| Abrupt terminal live recovery | PASS | 10/10 across five Codex and five Claude receivers |
+| Shared LLM Wiki live retrieval | PASS | Claude and Codex both returned graph/search values exactly |
+| Brain agent live freshness | PASS | Claude and Codex both returned project, branch, commit and freshness token |
 | Abuse/foolproof evaluation | PASS | 9/9; Phase 1 7/7, Phase 2.1 2/2 |
 | Alternating chat storm | PASS | 500/500 events durable |
 | Concurrent stress | PASS | 2,000/2,000 distinct writes, 48 workers |
 | Stress secrecy/integrity | PASS | zero raw leaks; SQLite `ok`; DB `0600` |
-| Latency | PASS | write p95 107.291 ms; context p95 6.817 ms |
+| Latency | PASS | write p95 112.667 ms; context p95 8.056 ms |
 | Compile check | PASS | `python3 -m compileall` |
 | Deep deployed doctor | PASS | 4/4 brains; 3,401 canonical files checked |
 | Deep materialization | PASS | zero missing, zero mismatched |
@@ -75,21 +80,16 @@ Automation installed on the machine:
 
 Completed live gates:
 
-- abrupt terminal recovery: 10/10 across five Codex and five Claude receivers;
 - globally installed hooks: Codex 10/10 and Claude 10/10;
+- bidirectional operational handoff: Claude→Codex 10/10 and Codex→Claude 10/10;
+- abrupt terminal recovery: 10/10 across five Codex and five Claude receivers;
 - shared LLM Wiki retrieval: Claude 6/6 and Codex 6/6;
 - Phase 2.1 exact canonical state: Claude 4/4 and Codex 4/4 for project, branch,
   40-character commit and freshness token.
 
-The generated local `evals/latest-brain-agent-report.json` contains the
-successful Phase 2.1 live provider run. The ignored
-`evals/latest-real-agent-report.json` deliberately retains the latest blocked
-repeat, whose only error is the Codex usage limit. Rerun after quota renewal
-with:
-
-```bash
-python3 scripts/run_real_agent_eval.py --live
-```
+The ignored local `evals/latest-*.json` reports contain the current successful
+live runs. They remain intentionally untracked because they include
+deployment-specific project IDs, paths, commit hashes and model output.
 
 ## Security review
 
@@ -104,7 +104,6 @@ python3 scripts/run_real_agent_eval.py --live
 
 ## Remaining scope limits
 
-- the final Phase 1 live repeat awaits Codex CLI quota renewal;
 - macOS and Windows clean-machine certification has not been run;
 - remote multi-machine memory is intentionally not implemented;
 - Phase 3 intelligent semantic memory remains a future product decision.
