@@ -34,7 +34,8 @@ e' stato modificato durante la diagnosi.
 - matching glob esplicito con distinzione tra path valido e vera violazione;
 - parser allow-listed senza shell per le prove repository-native osservate;
 - symlink locali ai soli alberi dipendenza ignorati nei worktree;
-- schema v3 con `source_path` immutabile e task unico per ogni job;
+- colonna additiva schema-2-compatible con `source_path` immutabile e task
+  unico per ogni job, senza interrompere processi MCP 0.5.0 gia' aperti;
 - protezione del workspace canonico e soppressione hook nei worker;
 - hard gate pre-claim sui tentativi, valido anche dopo crash e in parallelo;
 - reaping dei run provider durante `stop` e finalizzazione `interrupted`;
@@ -43,7 +44,8 @@ e' stato modificato durante la diagnosi.
 
 ## Prove di non regressione
 
-La suite copre migrazione v1/v2→v3, due job nello stesso progetto, worktree
+La suite copre migrazione v1→v2, backfill additivo e downgrade compatibile del
+release candidate v3, due job nello stesso progetto, worktree
 effimero con la stessa remote, comandi osservati nell'incidente, scope glob,
 dipendenze, hook no-op, crash al limite tentativi, due task falliti in parallelo,
 runner e provider reali `sleep` terminati da `stop`, milestone e fast-forward

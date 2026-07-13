@@ -37,7 +37,7 @@ but the desktop API is not stable enough in this shell to complete
 
 | Check | Result | Evidence |
 |---|---:|---|
-| Full suite | PASS | 97/97 |
+| Full suite | PASS | 98/98 |
 | Autopilot contract suite | PASS | real-command allowlist, glob scope, dependency links, migrations, job isolation, hook suppression, retry recovery, parallel failures, process-group stop and E2E |
 | Real incident replay | PASS | valid glob paths accepted; unrelated paths rejected; representative FARO pnpm/node/python/git proofs classified executable |
 | Detached milestones | PASS | planning, task, validation and completion JSON events are flushed before final output |

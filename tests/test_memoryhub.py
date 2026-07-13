@@ -64,7 +64,7 @@ class MemoryHubTests(unittest.TestCase):
         self.assertIn(str(db_path), result.stdout)
         self.assertEqual(0o600, db_path.stat().st_mode & 0o777)
         with self.db() as db:
-            self.assertEqual("3", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0])
+            self.assertEqual("2", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0])
 
     def test_suppressed_worker_hook_is_a_no_op(self) -> None:
         result = subprocess.run(

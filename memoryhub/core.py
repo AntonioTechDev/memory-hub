@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 2
 MAX_TEXT = 16_000
 
 SECRET_PATTERNS = [
@@ -338,7 +338,11 @@ class MemoryStore:
                 """
             )
             current = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            if current and int(current["value"]) not in {1, 2, SCHEMA_VERSION}:
+            # Version 3 existed briefly in the 0.5.1 release candidate. The
+            # source_path column is additive and remains schema-2 compatible,
+            # so accepting 3 here lets installed candidates downgrade without
+            # breaking already-running 0.5.0 MCP processes.
+            if current and int(current["value"]) not in {1, 2, 3}:
                 raise ValueError(f"unsupported schema version: {current['value']}")
             job_columns = {
                 str(row["name"])

@@ -216,7 +216,7 @@ class AutopilotStoreTests(unittest.TestCase):
         self.store.initialize()
         with sqlite3.connect(self.db) as db:
             self.assertEqual(
-                "3", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+                "2", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
             )
             self.assertIsNotNone(
                 db.execute(
@@ -231,6 +231,16 @@ class AutopilotStoreTests(unittest.TestCase):
             db.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
         self.store.initialize()
         self.assertEqual(str(self.repo.resolve()), self.store.get_job(job_id)["source_path"])
+
+    def test_release_candidate_schema_three_downgrades_compatibly(self) -> None:
+        self.store.initialize()
+        with sqlite3.connect(self.db) as db:
+            db.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
+        self.store.initialize()
+        with sqlite3.connect(self.db) as db:
+            self.assertEqual(
+                "2", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+            )
 
     def test_jobs_have_distinct_memory_tasks_and_immutable_source_paths(self) -> None:
         subprocess.run(
