@@ -4,7 +4,7 @@ Memory Hub is a local, provider-neutral continuity layer for coding agents.
 Claude Code, Codex and future MCP-compatible clients share the same operational
 task state, while an existing LLM Wiki remains the source of project knowledge.
 
-The current release (`0.5.0`) provides three deliberately separate memory
+The current release (`0.5.1`) provides three deliberately separate memory
 layers plus an opt-in execution layer:
 
 - **Phase 1 — operational continuity:** prompts, recent events and structured
@@ -116,6 +116,7 @@ returns immediately. Equivalent observable commands are:
 memoryhub autopilot start --objective "Complete and validate the refactor"
 memoryhub autopilot status
 memoryhub autopilot usage
+tail -f ~/.local/share/memoryhub/autopilot/logs/<job-id>.log
 ```
 
 The source worktree must be clean. Autopilot creates one integration worktree,
@@ -129,6 +130,13 @@ If a worker produces an in-scope change but its headless sandbox cannot run an
 approved test command, the runner executes that deterministic command itself.
 The change is retained only when the test passes, and the independent final
 review remains mandatory.
+
+Release 0.5.1 hardens long monorepo jobs after a real multi-hour incident:
+glob scopes are enforced correctly, repository-native pnpm/node/python/git
+checks run without a shell, ignored dependency trees are reused in isolated
+worktrees, every job owns an immutable source path and Memory Hub task, nested
+worker hooks are suppressed, retry limits survive crashes, `stop` reaps active
+provider groups, and detached logs contain flushed JSON milestones.
 
 See [functional analysis](docs/AUTOPILOT_FUNCTIONAL_ANALYSIS.md) for contracts,
 fallback, anti-over-engineering rules and release gates.

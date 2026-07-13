@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,7 +28,10 @@ from memoryhub.autopilot import (
 )
 from memoryhub.autopilot_runner import (
     AutopilotRunner,
+    _link_local_dependencies,
+    _path_allowed,
     is_provider_infrastructure_block,
+    run_validations,
     validation_command_allowed,
 )
 from memoryhub.core import MemoryStore
@@ -114,6 +120,46 @@ class AutopilotContractTests(unittest.TestCase):
         self.assertFalse(validation_command_allowed(["npm", "publish"]))
         self.assertFalse(validation_command_allowed(["make", "deploy"]))
         self.assertFalse(validation_command_allowed(["git", "push"]))
+        self.assertFalse(validation_command_allowed(["git", "diff", "--output=/tmp/leak"]))
+
+    def test_validation_allowlist_accepts_real_monorepo_proofs(self) -> None:
+        commands = [
+            "pnpm --filter @workspace/api-server run test:orchestration",
+            "pnpm run orchestration:validate",
+            "pnpm --filter @workspace/api-server exec tsx src/lib/orchestration.test.ts",
+            "node scripts/validate-apify-recovery.mjs",
+            "node --check scripts/validate-apify-recovery.mjs",
+            "PYTHONPATH=apps/agentos python3 -m unittest app.test_contract -v",
+            "python3 -m py_compile apps/agentos/app/main.py",
+            "git diff --check",
+            "git diff --exit-code -- apps/api",
+            "git status --short --branch",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertTrue(validation_command_allowed(command.split()))
+        self.assertFalse(validation_command_allowed("TOKEN=secret python3 -m unittest".split()))
+        self.assertFalse(validation_command_allowed("PYTHONPATH=/tmp python3 -m unittest".split()))
+        self.assertFalse(validation_command_allowed("python3 -m py_compile /tmp/out.py".split()))
+        self.assertFalse(validation_command_allowed("pytest --basetemp=/tmp/out".split()))
+        self.assertFalse(validation_command_allowed("node scripts/deploy-production.mjs".split()))
+        self.assertFalse(validation_command_allowed("pnpm run release".split()))
+
+    def test_scope_patterns_support_globs_without_hiding_real_violations(self) -> None:
+        allowed = ["apps/agentos/**", "packages/db/supabase/migrations/*apify*"]
+        self.assertTrue(_path_allowed("apps/agentos/app/main.py", allowed))
+        self.assertTrue(
+            _path_allowed("packages/db/supabase/migrations/123_apify_jobs.sql", allowed)
+        )
+        self.assertFalse(_path_allowed("apps/api/src/run-store.ts", allowed))
+
+    def test_validation_environment_is_passed_without_a_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            evidence = run_validations(
+                Path(raw),
+                ["PYTHONPATH=apps python3 -c print('unsafe')", "PYTHONPATH=apps python3 -m compileall -q ."],
+            )
+        self.assertEqual(["descriptive", "passed"], [item["status"] for item in evidence])
 
     def test_sandbox_initialization_block_is_provider_fallback_not_goal_block(self) -> None:
         self.assertTrue(
@@ -170,13 +216,42 @@ class AutopilotStoreTests(unittest.TestCase):
         self.store.initialize()
         with sqlite3.connect(self.db) as db:
             self.assertEqual(
-                "2", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+                "3", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
             )
             self.assertIsNotNone(
                 db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='autopilot_jobs'"
                 ).fetchone()
             )
+
+    def test_schema_two_adds_and_backfills_immutable_source_path(self) -> None:
+        job_id = self.store.create_job(cwd=self.repo, goal=GoalContract("Migrate", ["done"]))
+        with sqlite3.connect(self.db) as db:
+            db.execute("ALTER TABLE autopilot_jobs DROP COLUMN source_path")
+            db.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
+        self.store.initialize()
+        self.assertEqual(str(self.repo.resolve()), self.store.get_job(job_id)["source_path"])
+
+    def test_jobs_have_distinct_memory_tasks_and_immutable_source_paths(self) -> None:
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://example.test/team/project.git"],
+            cwd=self.repo,
+            check=True,
+        )
+        first = self.store.create_job(cwd=self.repo, goal=GoalContract("First", ["done"]))
+        second = self.store.create_job(cwd=self.repo, goal=GoalContract("Second", ["done"]))
+        self.assertNotEqual(self.store.get_job(first)["task_id"], self.store.get_job(second)["task_id"])
+        transient = self.base / "memory" / "autopilot" / "jobs" / "job" / "task"
+        transient.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=transient, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://example.test/team/project.git"],
+            cwd=transient,
+            check=True,
+        )
+        with patch.dict(os.environ, {"MEMORYHUB_HOME": str(self.base / "memory")}, clear=False):
+            self.memory.ensure_workspace(transient)
+        self.assertEqual(self.repo.resolve(), self.store.job_workspace_path(first))
 
     def test_job_plan_leases_and_recovery_are_durable(self) -> None:
         goal = GoalContract("Build feature", ["Tests pass"])
@@ -189,6 +264,14 @@ class AutopilotStoreTests(unittest.TestCase):
         self.assertEqual(1, self.store.recover_running_tasks(job_id, reason="crash"))
         self.assertTrue(self.store.claim_task(job_id, "t1", "runner-b", 60))
 
+    def test_non_git_goal_does_not_leave_an_orphan_memory_task(self) -> None:
+        outside = self.base / "outside"
+        outside.mkdir()
+        with self.assertRaisesRegex(ValueError, "Git repository"):
+            self.store.create_job(cwd=outside, goal=GoalContract("Invalid", ["done"]))
+        with self.memory.connect() as db:
+            self.assertEqual(0, db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0])
+
 
 class AutopilotRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -200,7 +283,9 @@ class AutopilotRunnerTests(unittest.TestCase):
         self.repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.repo, check=True)
         (self.repo / "README.md").write_text("autopilot test\n", encoding="utf-8")
-        (self.repo / ".gitignore").write_text("__pycache__/\n*.pyc\n", encoding="utf-8")
+        (self.repo / ".gitignore").write_text(
+            "__pycache__/\n*.pyc\nnode_modules/\n", encoding="utf-8"
+        )
         subprocess.run(["git", "add", "README.md", ".gitignore"], cwd=self.repo, check=True)
         subprocess.run(
             ["git", "-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-qm", "init"],
@@ -211,6 +296,8 @@ class AutopilotRunnerTests(unittest.TestCase):
         self.fake.write_text(
             """#!/usr/bin/env python3
 import json, os, pathlib, sys
+if os.environ.get('MEMORYHUB_SUPPRESS_HOOKS') != '1':
+    raise SystemExit('hooks were not suppressed')
 args = sys.argv[1:]
 out = pathlib.Path(args[args.index('--output-last-message') + 1])
 prompt = args[-1]
@@ -267,6 +354,8 @@ out.write_text(json.dumps(value), encoding='utf-8')
         self.fake_claude.write_text(
             """#!/usr/bin/env python3
 import json, os, pathlib, sys
+if os.environ.get('MEMORYHUB_SUPPRESS_HOOKS') != '1':
+  raise SystemExit('hooks were not suppressed')
 prompt = sys.argv[-1]
 if 'independent final reviewer' in prompt:
   value = {'passed':True,'summary':'verified','answers':['goal met'],
@@ -325,7 +414,9 @@ print(json.dumps({'is_error':False,'structured_output':value}))
                 validation_timeout=20,
                 refresh_provider_usage=False,
             )
-            result = runner.run_job(job_id, self.repo)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = runner.run_job(job_id, self.repo)
         self.assertEqual("completed", result["status"])
         self.assertEqual("completed\n", (self.repo / "result.txt").read_text(encoding="utf-8"))
         self.assertEqual("completed", result["tasks"][0]["status"])
@@ -334,6 +425,44 @@ print(json.dumps({'is_error':False,'structured_output':value}))
             ["git", "status", "--porcelain"], cwd=self.repo,
             capture_output=True, text=True, check=True,
         ).stdout)
+        events = [json.loads(line)["event"] for line in output.getvalue().splitlines()]
+        self.assertIn("planning_started", events)
+        self.assertIn("task_finished", events)
+        self.assertIn("job_completed", events)
+
+    def test_dependency_trees_are_linked_into_isolated_worktrees(self) -> None:
+        dependency = self.repo / "node_modules"
+        dependency.mkdir()
+        (dependency / "sentinel.txt").write_text("available\n", encoding="utf-8")
+        target = self.base / "target"
+        target.mkdir()
+        self.assertEqual(1, _link_local_dependencies(self.repo, target))
+        self.assertTrue((target / "node_modules").is_symlink())
+        self.assertEqual("available\n", (target / "node_modules" / "sentinel.txt").read_text())
+
+    def test_recovered_task_cannot_exceed_retry_limit(self) -> None:
+        with patch.dict(os.environ, self.env, clear=False):
+            store = AutopilotStore()
+            job_id = store.create_job(
+                cwd=self.repo,
+                goal=GoalContract("Never run a third attempt", ["stops"], complexity="s"),
+                max_attempts=2,
+            )
+            store.save_plan(
+                job_id,
+                [TaskContract("t1", "Bounded", "Bounded", ["stops"], ["python3 -m compileall -q ."])],
+            )
+            for index in range(2):
+                self.assertTrue(store.claim_task(job_id, "t1", f"crashed-{index}", 60))
+                store.recover_running_tasks(job_id, reason="simulated runner crash")
+            result = AutopilotRunner(
+                store=store,
+                codex_binary=str(self.fake),
+                claude_binary=str(self.fake_claude),
+                refresh_provider_usage=False,
+            ).run_job(job_id, self.repo)
+        self.assertEqual("blocked", result["status"])
+        self.assertEqual(2, result["tasks"][0]["attempt_count"])
 
     def test_recovery_reaps_orphan_provider_process_group(self) -> None:
         with patch.dict(os.environ, self.env, clear=False):
@@ -358,6 +487,46 @@ print(json.dumps({'is_error':False,'structured_output':value}))
                 if process.poll() is None:
                     os.killpg(process.pid, 9)
                     process.wait(timeout=3)
+        self.assertEqual([], store.active_runs(job_id))
+
+    def test_stop_reaps_runner_and_provider_process_groups(self) -> None:
+        with patch.dict(os.environ, self.env, clear=False):
+            store = AutopilotStore()
+            job_id = store.create_job(
+                cwd=self.repo,
+                goal=GoalContract("Stop safely", ["No process remains"], complexity="s"),
+            )
+            runner_process = subprocess.Popen(["sleep", "60"], start_new_session=True)
+            provider_process = subprocess.Popen(["sleep", "60"], start_new_session=True)
+            try:
+                store.update_job(job_id, runner_pid=runner_process.pid)
+                run_id = store.create_run(
+                    job_id=job_id,
+                    task_id=None,
+                    role="worker",
+                    route=Route("claude", "", "medium", "builder", "test"),
+                )
+                store.update_run_pid(run_id, provider_process.pid)
+                stopped = subprocess.run(
+                    [sys.executable, "-m", "memoryhub", "autopilot", "stop", job_id],
+                    cwd=self.repo,
+                    env={
+                        **self.env,
+                        "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+                    },
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=True,
+                )
+                runner_process.wait(timeout=3)
+                provider_process.wait(timeout=3)
+            finally:
+                for process in (runner_process, provider_process):
+                    if process.poll() is None:
+                        os.killpg(process.pid, 9)
+                        process.wait(timeout=3)
+        self.assertEqual("cancelled", json.loads(stopped.stdout)["status"])
         self.assertEqual([], store.active_runs(job_id))
 
     def test_rate_limit_falls_back_from_codex_to_claude(self) -> None:
@@ -427,6 +596,31 @@ print(json.dumps({'is_error':False,'structured_output':value}))
             ).run_job(job_id, self.repo)
         self.assertEqual("blocked", result["status"])
         self.assertEqual(2, result["tasks"][0]["attempt_count"])
+
+    def test_parallel_failures_each_obey_the_retry_gate(self) -> None:
+        with patch.dict(
+            os.environ,
+            {**self.env, "FAKE_ALL_INFRA_BLOCK": "1", "FAKE_PLAN": "parallel"},
+            clear=False,
+        ):
+            store = AutopilotStore()
+            job_id = store.create_job(
+                cwd=self.repo,
+                goal=GoalContract("Create two files", ["both exist"], complexity="m", risk="low"),
+                max_workers=2,
+                max_attempts=2,
+                lead_provider="codex",
+            )
+            result = AutopilotRunner(
+                store=store,
+                codex_binary=str(self.fake),
+                claude_binary=str(self.fake_claude),
+                provider_timeout=20,
+                validation_timeout=20,
+                refresh_provider_usage=False,
+            ).run_job(job_id, self.repo)
+        self.assertEqual("blocked", result["status"])
+        self.assertEqual([2, 2], [task["attempt_count"] for task in result["tasks"]])
 
     def test_two_disjoint_tasks_use_two_providers_and_integrate(self) -> None:
         with patch.dict(os.environ, {**self.env, "FAKE_PLAN": "parallel"}, clear=False):

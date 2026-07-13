@@ -39,6 +39,8 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_hook(args: argparse.Namespace) -> int:
+    if os.environ.get("MEMORYHUB_SUPPRESS_HOOKS") == "1":
+        return 0
     payload = read_payload()
     context = store_from_args(args).capture_hook(args.event, args.actor, payload)
     if args.event == "session-start":
@@ -268,6 +270,8 @@ def cmd_autopilot_recover(args: argparse.Namespace) -> int:
 
 
 def cmd_autopilot_stop(args: argparse.Namespace) -> int:
+    from .autopilot_runner import AutopilotRunner
+
     store = autopilot_store_from_args(args)
     job_id = _resolve_autopilot_job(args)
     job = store.get_job(job_id)
@@ -277,9 +281,17 @@ def cmd_autopilot_stop(args: argparse.Namespace) -> int:
             os.killpg(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+    reaped = AutopilotRunner(
+        store=store, refresh_provider_usage=False
+    ).reap_orphan_provider_runs(job_id)
     store.recover_running_tasks(job_id, reason="Autopilot stopped by user")
     store.update_job(job_id, status="cancelled", error="stopped by user")
-    print(json.dumps({"job_id": job_id, "status": "cancelled"}, indent=2))
+    print(
+        json.dumps(
+            {"job_id": job_id, "status": "cancelled", "provider_runs_reaped": reaped},
+            indent=2,
+        )
+    )
     return 0
 
 

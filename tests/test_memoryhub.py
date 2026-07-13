@@ -64,7 +64,20 @@ class MemoryHubTests(unittest.TestCase):
         self.assertIn(str(db_path), result.stdout)
         self.assertEqual(0o600, db_path.stat().st_mode & 0o777)
         with self.db() as db:
-            self.assertEqual("2", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0])
+            self.assertEqual("3", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0])
+
+    def test_suppressed_worker_hook_is_a_no_op(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "memoryhub", "hook", "--event", "session-start", "--actor", "codex"],
+            cwd=self.workspace,
+            env={**self.env, "MEMORYHUB_SUPPRESS_HOOKS": "1"},
+            input=json.dumps({"thread-id": "nested", "cwd": str(self.workspace)}),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual("", result.stdout)
+        self.assertFalse((self.memory_home / "memory.db").exists())
 
     def test_claude_to_codex_checkpoint_uses_same_global_task(self) -> None:
         self.cli(

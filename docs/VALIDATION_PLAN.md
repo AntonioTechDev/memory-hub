@@ -82,6 +82,13 @@
 | A10 | Source safety | fast-forward occurs only while original HEAD and clean state are unchanged |
 | A11 | Process cleanup | timeout/crash leaves no worker process, lease or task worktree |
 | A12 | Portable skill | Codex/Claude skills match, validate and install idempotently |
+| A13 | Monorepo validation | glob scope and pnpm/node/python/git proof commands are accepted without shell execution |
+| A14 | Dependency reuse | ignored node_modules/venv trees are available in isolated worktrees |
+| A15 | Job isolation | every job has a distinct task and immutable canonical source path |
+| A16 | Hook isolation | nested worker sessions cannot pollute lifecycle memory or workspace paths |
+| A17 | Crash retry cap | recovered and parallel tasks never exceed the configured attempt limit |
+| A18 | Explicit stop | runner and provider process groups are reaped and active runs are finalized |
+| A19 | Detached observability | planning, batch, task, retry, validation and terminal milestones are flushed to the log |
 
 ## Commands
 

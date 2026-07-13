@@ -23,12 +23,13 @@ Snapshot: 2026-07-13.
 | Independent completion gate | Complete | deterministic commands plus fresh reviewer; false worker claim rejected live |
 | Real cross-provider Autopilot | Complete | Claude plan+implementation, runner test recovery, Codex review, fast-forward |
 | Portable Autopilot skill | Complete | identical clean-install skill in Codex and Claude |
+| Long-job incident remediation | Complete | glob/validation/dependency/job/hook/retry/stop/log regressions covered |
 | Git publication | Complete | `origin` points to the public `memory-hub` repository |
 
 ## Decision
 
 The implementation is ready for continued Automa use and the validated Linux
-open-source release. No known product defect blocks release 0.5.0. macOS and
+open-source release. No known product defect blocks release 0.5.1. macOS and
 Windows remain portability targets rather than certified platforms.
 
 Phase 3 intelligent memory is not included. Decide on it only after observing

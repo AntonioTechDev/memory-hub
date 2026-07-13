@@ -62,6 +62,8 @@ Il runner usa lease, heartbeat, attempt e transizioni atomiche. Una decisione
 dell'orchestratore viene applicata solo dopo output schema-valido. Dopo crash o
 timeout, un nuovo processo riconcilia database, PID, Git e worktree e riparte
 dall'ultimo stato verificabile, non dal ragionamento volatile del modello.
+Il percorso sorgente e il task Memory Hub sono immutabili e distinti per job:
+un hook partito da un worktree effimero non puo' sostituire il progetto canonico.
 
 ### AF6 — Parallelismo controllato
 
@@ -99,6 +101,8 @@ collaterali e scope oltre il doppio del piano richiedono replanning.
 Gli eventi visibili sono: avvio, piano, milestone, fallback, blocco e risultato
 finale. Se la chat e' chiusa, il job continua e il riepilogo viene recuperato da
 Memory Hub alla sessione successiva.
+Il log detached contiene una riga JSON flushed per ogni milestone, quindi resta
+osservabile anche quando il runner viene interrotto prima del report finale.
 
 ## Stato e transizioni
 
@@ -129,6 +133,10 @@ vengono riscritte.
 - report privati, bounded e redatti;
 - nessun push, deploy, migrazione remota o acquisto crediti implicito;
 - nessuna modifica simultanea nello stesso worktree;
+- gli hook Memory Hub dei worker effimeri sono soppressi: persiste solo il
+  checkpoint bounded scritto dal runner;
+- scope con glob, validazioni allow-listed e limite tentativi sono verificati
+  dal runner, non affidati al self-report del modello;
 - operazioni esterne non idempotenti richiedono riconciliazione umana;
 - la memoria non concede permessi aggiuntivi.
 

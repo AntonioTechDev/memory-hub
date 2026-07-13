@@ -283,6 +283,7 @@ def run_json_agent(
             process = subprocess.Popen(
                 command,
                 cwd=cwd,
+                env={**os.environ, "MEMORYHUB_SUPPRESS_HOOKS": "1"},
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -391,7 +392,7 @@ def query_usage(
                     "id": 1,
                     "method": "initialize",
                     "params": {
-                        "clientInfo": {"name": "memoryhub", "version": "0.5.0"},
+                        "clientInfo": {"name": "memoryhub", "version": "0.5.1"},
                         "capabilities": None,
                     },
                 },

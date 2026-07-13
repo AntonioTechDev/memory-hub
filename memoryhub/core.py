@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_TEXT = 16_000
 
 SECRET_PATTERNS = [
@@ -272,6 +272,7 @@ class MemoryStore:
                     lead_provider TEXT NOT NULL DEFAULT 'auto',
                     base_ref TEXT NOT NULL DEFAULT '',
                     base_branch TEXT NOT NULL DEFAULT '',
+                    source_path TEXT NOT NULL DEFAULT '',
                     integration_branch TEXT NOT NULL DEFAULT '',
                     integration_path TEXT NOT NULL DEFAULT '',
                     runner_pid INTEGER,
@@ -337,8 +338,25 @@ class MemoryStore:
                 """
             )
             current = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            if current and int(current["value"]) not in {1, SCHEMA_VERSION}:
+            if current and int(current["value"]) not in {1, 2, SCHEMA_VERSION}:
                 raise ValueError(f"unsupported schema version: {current['value']}")
+            job_columns = {
+                str(row["name"])
+                for row in db.execute("PRAGMA table_info(autopilot_jobs)").fetchall()
+            }
+            if "source_path" not in job_columns:
+                db.execute(
+                    "ALTER TABLE autopilot_jobs ADD COLUMN source_path TEXT NOT NULL DEFAULT ''"
+                )
+            db.execute(
+                """
+                UPDATE autopilot_jobs
+                SET source_path=(
+                    SELECT path FROM workspaces WHERE workspaces.id=autopilot_jobs.workspace_id
+                )
+                WHERE source_path=''
+                """
+            )
             db.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
@@ -351,14 +369,17 @@ class MemoryStore:
     def ensure_workspace(self, cwd: str | Path | None = None) -> dict[str, str]:
         workspace = workspace_identity(cwd)
         timestamp = utc_now()
+        workspace_path = Path(workspace["path"]).expanduser().resolve()
+        transient_root = (memory_home() / "autopilot" / "jobs").resolve()
+        transient = workspace_path == transient_root or transient_root in workspace_path.parents
         with self.connect() as db:
             db.execute(
                 """
                 INSERT INTO workspaces(id, path, name, git_remote, created_at, updated_at)
                 VALUES(?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
-                    path=excluded.path,
-                    name=excluded.name,
+                    path=CASE WHEN ? THEN workspaces.path ELSE excluded.path END,
+                    name=CASE WHEN ? THEN workspaces.name ELSE excluded.name END,
                     git_remote=excluded.git_remote,
                     updated_at=excluded.updated_at
                 """,
@@ -369,9 +390,15 @@ class MemoryStore:
                     workspace["git_remote"],
                     timestamp,
                     timestamp,
+                    transient,
+                    transient,
                 ),
             )
-        return workspace
+            stored = db.execute(
+                "SELECT id, path, name, git_remote FROM workspaces WHERE id=?",
+                (workspace["id"],),
+            ).fetchone()
+        return dict(stored) if stored is not None else workspace
 
     def active_task(
         self,

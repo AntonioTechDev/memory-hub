@@ -459,6 +459,9 @@ Implement only this task. Inspect current files and Git before editing. Preserve
 work. Do not commit, push, pull, checkout, reset, stash, rebase, deploy, buy credits, spawn
 background agents, or wait for user input. Prefer the smallest change that satisfies the
 acceptance criteria; do not add speculative abstractions or unrelated cleanup.
+The runner owns operational-memory persistence. Do not call Memory Hub tools or create
+checkpoints. Dependency directories linked from the source (such as node_modules or .venv)
+are read-only inputs: never edit them.
 
 GOAL CONTRACT
 {json.dumps(goal.to_dict(), ensure_ascii=False, indent=2)}
@@ -502,10 +505,17 @@ class AutopilotStore:
             raise ValueError("max_attempts must be between 1 and 3")
         if lead_provider not in {"auto", "codex", "claude"}:
             raise ValueError("lead_provider must be auto, codex or claude")
-        workspace = self.memory.ensure_workspace(cwd)
+        source = cwd.expanduser().resolve()
+        base_ref = _git(source, "rev-parse", "HEAD")
+        if not base_ref:
+            raise ValueError("Autopilot requires a Git repository with at least one commit")
+        base_branch = _git(source, "branch", "--show-current")
+        workspace = self.memory.ensure_workspace(source)
+        task_id = self.memory.create_task(workspace["id"], "autopilot", goal.objective)
         task_id = self.memory.checkpoint(
             actor="autopilot",
-            cwd=cwd,
+            cwd=source,
+            task_id=task_id,
             objective=goal.objective,
             status="in_progress",
             summary="Autopilot job created; planning pending.",
@@ -514,16 +524,14 @@ class AutopilotStore:
         )
         job_id = f"ap_{uuid.uuid4().hex[:16]}"
         timestamp = utc_now()
-        base_ref = _git(cwd, "rev-parse", "HEAD")
-        base_branch = _git(cwd, "branch", "--show-current")
         with self.memory.connect() as db:
             db.execute(
                 """
                 INSERT INTO autopilot_jobs(
                     id, task_id, workspace_id, objective, goal_json, status,
                     max_workers, max_attempts, lead_provider, base_ref, base_branch,
-                    created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, 'planning', ?, ?, ?, ?, ?, ?, ?)
+                    source_path, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, 'planning', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -536,6 +544,7 @@ class AutopilotStore:
                     lead_provider,
                     base_ref,
                     base_branch,
+                    str(source),
                     timestamp,
                     timestamp,
                 ),
@@ -592,6 +601,8 @@ class AutopilotStore:
 
     def job_workspace_path(self, job_id: str) -> Path:
         job = self.get_job(job_id)
+        if str(job["source_path"] or "").strip():
+            return Path(str(job["source_path"])).expanduser().resolve()
         with self.memory.connect() as db:
             row = db.execute(
                 "SELECT path FROM workspaces WHERE id=?", (job["workspace_id"],)

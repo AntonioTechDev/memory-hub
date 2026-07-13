@@ -2,13 +2,19 @@
 
 ## Verdict
 
-**Memory Hub 0.5.0 passes the local, clean-install, operational dashboard and
+**Memory Hub 0.5.1 passes the local, clean-install, operational dashboard and
 Autopilot gates on the Automa Linux machine.** The automatic branch policy
 remains canonical-only. The current headless shell could not complete the deep
 deployed-brain freshness gate because the external LLM Wiki desktop API exits
 during forced rescan; materialized source files still match canonical Git.
 
-The 0.5.0 release adds `$autopilot` and the `memoryhub autopilot` lifecycle: a
+The 0.5.1 corrective release was derived from the latest real long-running
+Autopilot sessions. It fixes false scope violations for glob contracts,
+rejected monorepo validations, missing ignored dependencies, mutable workspace
+paths, shared Memory Hub tasks, nested hook pollution, crash retry overruns,
+empty detached logs and provider processes left active after `stop`.
+
+The 0.5.0 release added `$autopilot` and the `memoryhub autopilot` lifecycle: a
 durable local runner, goal/task contracts, subscription-aware Codex/Claude
 routing, isolated worktrees, bounded retries, controlled two-worker
 parallelism, deterministic validation and a fresh independent reviewer. A live
@@ -31,8 +37,10 @@ but the desktop API is not stable enough in this shell to complete
 
 | Check | Result | Evidence |
 |---|---:|---|
-| Full suite | PASS | 86/86 |
-| Autopilot contract suite | PASS | 16/16: planning, routing, fallback, leases, orphan reaping, retry cap, scope and E2E |
+| Full suite | PASS | 97/97 |
+| Autopilot contract suite | PASS | real-command allowlist, glob scope, dependency links, migrations, job isolation, hook suppression, retry recovery, parallel failures, process-group stop and E2E |
+| Real incident replay | PASS | valid glob paths accepted; unrelated paths rejected; representative FARO pnpm/node/python/git proofs classified executable |
+| Detached milestones | PASS | planning, task, validation and completion JSON events are flushed before final output |
 | Real Autopilot goal | PASS | Claude plan+worker → runner recovery → 70/70 → fresh Codex review → fast-forward |
 | False-positive validation gate | PASS | reviewer rejected a worker claim when the exact command exited 5 with zero tests |
 | Provider sandbox recovery | PASS | Claude approval block and Codex bubblewrap block classified as infrastructure, never product blockers |

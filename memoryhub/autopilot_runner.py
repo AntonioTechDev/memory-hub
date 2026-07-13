@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -47,18 +49,78 @@ SAFE_VALIDATION_PROGRAMS = {
     "cargo",
     "go",
     "make",
+    "node",
+    "git",
 }
-SAFE_SCRIPT_NAMES = {"test", "tests", "lint", "typecheck", "check", "build", "validate", "smoke"}
-SAFE_PYTHON_MODULES = {"unittest", "pytest", "compileall"}
+SAFE_SCRIPT_TOKENS = {
+    "test", "tests", "lint", "typecheck", "check", "build", "validate",
+    "validation", "smoke", "codegen", "census", "matrix", "orchestration",
+}
+UNSAFE_SCRIPT_TOKENS = {"deploy", "publish", "release", "upload", "migrate", "seed"}
+SAFE_PYTHON_MODULES = {"unittest", "pytest", "compileall", "py_compile"}
+SAFE_VALIDATION_ENV = {"CI", "NODE_ENV", "PYTHONPATH"}
+
+
+def _safe_relative_path(value: str, suffixes: set[str] | None = None) -> bool:
+    path = Path(value)
+    return (
+        bool(value)
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and (suffixes is None or path.suffix.lower() in suffixes)
+    )
+
+
+def _safe_script_name(value: str) -> bool:
+    tokens = {item for item in re.split(r"[:._-]+", value.lower()) if item}
+    return bool(tokens & SAFE_SCRIPT_TOKENS) and not bool(tokens & UNSAFE_SCRIPT_TOKENS)
+
+
+def _safe_argument(value: str) -> bool:
+    candidate = value.split("=", 1)[1] if value.startswith("--") and "=" in value else value
+    if not candidate or candidate.startswith("-"):
+        return "\x00" not in value
+    path = Path(candidate)
+    return not path.is_absolute() and ".." not in path.parts and "\x00" not in value
+
+
+def _split_validation_parts(parts: list[str]) -> tuple[list[str], dict[str, str]]:
+    env: dict[str, str] = {}
+    index = 0
+    while index < len(parts) and "=" in parts[index]:
+        key, value = parts[index].split("=", 1)
+        if key not in SAFE_VALIDATION_ENV or "\x00" in value:
+            return [], {}
+        if key == "PYTHONPATH" and not all(
+            _safe_relative_path(item) for item in value.split(os.pathsep) if item
+        ):
+            return [], {}
+        env[key] = value
+        index += 1
+    return parts[index:], env
 
 
 def validation_command_allowed(parts: list[str]) -> bool:
+    parts, _ = _split_validation_parts(parts)
     if not parts or parts[0] not in SAFE_VALIDATION_PROGRAMS:
         return False
     program = parts[0]
     if program in {"python", "python3"}:
         if len(parts) >= 3 and parts[1] == "-m":
-            return parts[2] in SAFE_PYTHON_MODULES
+            module = parts[2]
+            args = parts[3:]
+            if module == "py_compile":
+                return bool(args) and all(
+                    _safe_relative_path(item, {".py"}) for item in args
+                )
+            if module == "compileall":
+                return bool(args) and all(
+                    item in {"-f", "-q", "-v"} or _safe_relative_path(item)
+                    for item in args
+                )
+            return module in {"unittest", "pytest"} and all(
+                _safe_argument(item) for item in args
+            )
         if len(parts) >= 2:
             path = Path(parts[1])
             return (
@@ -67,25 +129,84 @@ def validation_command_allowed(parts: list[str]) -> bool:
                 and path.suffix == ".py"
                 and (path.name.startswith("test_") or path.name.startswith("run_"))
                 and path.parts[0] in {"tests", "scripts"}
+                and all(_safe_argument(item) for item in parts[2:])
             )
         return False
     if program == "pytest":
-        return True
+        return all(_safe_argument(item) for item in parts[1:])
     if program in {"npm", "pnpm", "yarn", "bun"}:
-        if len(parts) == 2:
-            return parts[1] in SAFE_SCRIPT_NAMES
-        return len(parts) >= 3 and parts[1] == "run" and parts[2] in SAFE_SCRIPT_NAMES
+        args = parts[1:]
+        while len(args) >= 2 and args[0] in {"--filter", "-F"}:
+            if not re.fullmatch(r"[A-Za-z0-9@_./*{}-]+", args[1]):
+                return False
+            if ".." in Path(args[1]).parts:
+                return False
+            args = args[2:]
+        if len(args) >= 2 and args[0] == "run":
+            return _safe_script_name(args[1]) and all(_safe_argument(item) for item in args[2:])
+        if args and _safe_script_name(args[0]):
+            return all(_safe_argument(item) for item in args[1:])
+        if len(args) >= 3 and args[:2] == ["exec", "tsx"]:
+            return _safe_relative_path(args[2], {".ts", ".tsx"}) and _safe_script_name(
+                Path(args[2]).stem
+            ) and all(_safe_argument(item) for item in args[3:])
+        return False
     if program == "make":
-        return len(parts) >= 2 and all(target in SAFE_SCRIPT_NAMES for target in parts[1:])
+        return len(parts) >= 2 and all(_safe_script_name(target) for target in parts[1:])
     if program == "cargo":
-        return len(parts) >= 2 and parts[1] in {"test", "check", "clippy", "build"}
+        return (
+            len(parts) >= 2
+            and parts[1] in {"test", "check", "clippy", "build"}
+            and all(_safe_argument(item) for item in parts[2:])
+        )
     if program == "go":
-        return len(parts) >= 2 and parts[1] in {"test", "vet", "build"}
+        return (
+            len(parts) >= 2
+            and parts[1] in {"test", "vet", "build"}
+            and all(_safe_argument(item) for item in parts[2:])
+        )
+    if program == "node":
+        if len(parts) >= 3 and parts[1] == "--check":
+            return all(_safe_relative_path(item, {".js", ".mjs", ".cjs"}) for item in parts[2:])
+        if len(parts) >= 2:
+            path = Path(parts[1])
+            return (
+                _safe_relative_path(parts[1], {".js", ".mjs", ".cjs"})
+                and bool(path.parts)
+                and path.parts[0] in {"scripts", "tests"}
+                and _safe_script_name(path.stem)
+                and all(_safe_argument(item) for item in parts[2:])
+            )
+        return False
+    if program == "git":
+        if len(parts) >= 2 and parts[1] == "status":
+            return all(item in {"--short", "--branch", "--porcelain"} for item in parts[2:])
+        if len(parts) >= 2 and parts[1] == "diff":
+            safe_options = {
+                "--", "--cached", "--check", "--exit-code", "--name-only",
+                "--quiet", "--staged", "--stat",
+            }
+            return all(
+                item in safe_options if item.startswith("-") else _safe_relative_path(item)
+                for item in parts[2:]
+            )
+        return False
     return False
 
 
 class AutopilotError(RuntimeError):
     pass
+
+
+def _emit(event: str, **payload: Any) -> None:
+    print(
+        json.dumps(
+            {"at": utc_now(), "event": event, **redact(payload)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
 
 
 def _private_dir(path: Path) -> None:
@@ -107,6 +228,32 @@ def _git(cwd: Path, *args: str, check: bool = True, timeout: int = 120) -> str:
     if check and result.returncode:
         raise AutopilotError(result.stderr.strip() or f"git {' '.join(args)} failed")
     return result.stdout.strip()
+
+
+def _link_local_dependencies(source: Path, target: Path, *, limit: int = 200) -> int:
+    """Reuse ignored dependency trees without copying or allowing them into commits."""
+    linked = 0
+    dependency_names = {"node_modules", ".venv", "venv"}
+    for root, directories, _ in os.walk(source):
+        directories[:] = [
+            name
+            for name in directories
+            if name != ".git" and name not in dependency_names
+        ]
+        root_path = Path(root)
+        for name in dependency_names:
+            candidate = root_path / name
+            if not candidate.is_dir():
+                continue
+            relative = candidate.relative_to(source)
+            destination = target / relative
+            if destination.exists() or destination.is_symlink() or not destination.parent.is_dir():
+                continue
+            destination.symlink_to(candidate.resolve(), target_is_directory=True)
+            linked += 1
+            if linked >= limit:
+                return linked
+    return linked
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -163,12 +310,18 @@ def _path_allowed(path: str, allowed: list[str]) -> bool:
     if not allowed:
         return True
     clean_path = path.strip().strip("./")
-    return any(
-        clean_path == prefix.strip().strip("./")
-        or clean_path.startswith(f"{prefix.strip().strip('./')}/")
-        for prefix in allowed
-        if prefix.strip().strip("./")
-    )
+    for raw_pattern in allowed:
+        pattern = raw_pattern.strip().strip("./")
+        if not pattern:
+            continue
+        if any(character in pattern for character in "*?["):
+            if fnmatch.fnmatchcase(clean_path, pattern):
+                return True
+            if pattern.endswith("/**") and clean_path == pattern[:-3].rstrip("/"):
+                return True
+        elif clean_path == pattern or clean_path.startswith(f"{pattern}/"):
+            return True
+    return False
 
 
 def run_validations(cwd: Path, commands: list[str], *, timeout: int = 1200) -> list[dict[str, Any]]:
@@ -179,6 +332,7 @@ def run_validations(cwd: Path, commands: list[str], *, timeout: int = 1200) -> l
         except ValueError as error:
             evidence.append({"command": command, "status": "skipped", "reason": str(error)})
             continue
+        command_parts, command_env = _split_validation_parts(parts)
         if not validation_command_allowed(parts):
             evidence.append(
                 {
@@ -191,8 +345,9 @@ def run_validations(cwd: Path, commands: list[str], *, timeout: int = 1200) -> l
         started = time.monotonic()
         try:
             result = subprocess.run(
-                parts,
+                command_parts,
                 cwd=cwd,
+                env={**os.environ, **command_env},
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -289,16 +444,21 @@ class AutopilotRunner:
             pid = int(run["pid"]) if run["pid"] else None
             if pid and pid != os.getpid() and not _terminate_orphan_group(pid):
                 raise AutopilotError(f"could not terminate orphan provider group {pid}")
-            self.store.finish_run(
-                str(run["id"]),
-                status="interrupted",
-                result={"recovered": True, "orphan_pid": pid},
-                error="provider run orphaned by runner interruption",
-            )
+            try:
+                self.store.finish_run(
+                    str(run["id"]),
+                    status="interrupted",
+                    result={"recovered": True, "orphan_pid": pid},
+                    error="provider run orphaned by runner interruption",
+                )
+            except ValueError:
+                # The previous runner may have finalized it between the snapshot and reap.
+                continue
             reaped += 1
         return reaped
 
     def plan(self, job_id: str, cwd: Path) -> tuple[GoalContract, list[TaskContract], dict[str, Any]]:
+        _emit("planning_started", job_id=job_id)
         job = self.store.get_job(job_id)
         fallback_goal = GoalContract.from_dict(json.loads(str(job["goal_json"])))
         usage = self.refresh_usage()
@@ -343,12 +503,15 @@ class AutopilotRunner:
                 goal = GoalContract.from_dict(structured["goal"])
                 tasks = [TaskContract.from_dict(item) for item in structured["tasks"]]
                 validate_plan(goal, tasks)
+                _emit("plan_ready", job_id=job_id, task_count=len(tasks))
                 return goal, tasks, result
             except (KeyError, TypeError, ValueError) as error:
                 result = {**result, "status": "invalid-plan", "error": str(error)}
         # Planning failures fail soft to one conservative task. A worker still
         # has bounded scope, and the final reviewer prevents false completion.
-        return fallback_goal, default_tasks(fallback_goal, cwd), result
+        tasks = default_tasks(fallback_goal, cwd)
+        _emit("plan_fallback", job_id=job_id, task_count=len(tasks), status=result["status"])
+        return fallback_goal, tasks, result
 
     def _job_root(self, job_id: str) -> Path:
         path = memory_home() / "autopilot" / "jobs" / job_id
@@ -360,6 +523,7 @@ class AutopilotRunner:
         stored = Path(str(job["integration_path"])) if job["integration_path"] else None
         branch = str(job["integration_branch"] or f"memoryhub/autopilot-{job_id[3:11]}")
         if stored and stored.is_dir() and (_git(stored, "rev-parse", "--is-inside-work-tree", check=False) == "true"):
+            _link_local_dependencies(self.store.job_workspace_path(job_id), stored)
             return stored, branch
         if _git(cwd, "status", "--porcelain"):
             raise AutopilotError("Autopilot requires a clean starting worktree")
@@ -379,10 +543,12 @@ class AutopilotRunner:
                 self.store.update_job(
                     job_id, integration_branch=branch, integration_path=str(path)
                 )
+                _link_local_dependencies(self.store.job_workspace_path(job_id), path)
                 return path, branch
             args.extend([str(path), base_ref])
             _git(cwd, *args)
         self.store.update_job(job_id, integration_branch=branch, integration_path=str(path))
+        _link_local_dependencies(self.store.job_workspace_path(job_id), path)
         return path, branch
 
     def _prepare_task_worktree(
@@ -397,6 +563,7 @@ class AutopilotRunner:
                 _git(integration, "worktree", "remove", "--force", str(path), check=False)
             _git(integration, "branch", "-D", branch, check=False)
             _git(integration, "worktree", "add", "-b", branch, str(path), "HEAD")
+        _link_local_dependencies(self.store.job_workspace_path(job_id), path)
         return path, branch
 
     def _cleanup_task_worktree(self, integration: Path, path: Path, branch: str) -> None:
@@ -432,6 +599,15 @@ class AutopilotRunner:
         branch: str,
     ) -> dict[str, Any]:
         attempt = int(task_row["attempt_count"]) + 1
+        _emit(
+            "task_started",
+            job_id=job_id,
+            task_id=contract.id,
+            attempt=attempt,
+            provider=route.provider,
+            model=route.model,
+            effort=route.effort,
+        )
         owner = f"runner-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         if not self.store.claim_task(
             job_id, contract.id, owner, self.provider_timeout + self.validation_timeout + 120
@@ -542,6 +718,15 @@ class AutopilotRunner:
             error=str(outcome.get("error", "")),
         )
         outcome["status"] = final_status
+        _emit(
+            "task_finished",
+            job_id=job_id,
+            task_id=contract.id,
+            attempt=attempt,
+            status=final_status,
+            changed_paths=changed,
+            scope_violations=violations,
+        )
         return outcome
 
     def _checkpoint_task(self, job_id: str, contract: TaskContract, outcome: dict[str, Any]) -> None:
@@ -594,6 +779,7 @@ class AutopilotRunner:
         return {str(row["id"]): row for row in self.store.tasks(job_id)}
 
     def _review(self, job_id: str, integration: Path, goal: GoalContract) -> dict[str, Any]:
+        _emit("validation_started", job_id=job_id)
         tasks = [
             TaskContract.from_dict(json.loads(str(row["contract_json"])))
             for row in self.store.tasks(job_id)
@@ -659,6 +845,7 @@ class AutopilotRunner:
             "validation_evidence": evidence,
             "passed": passed,
         }
+        _emit("validation_finished", job_id=job_id, passed=passed, provider=result.get("provider"))
         return outcome
 
     def _apply_to_source(self, job_id: str, source: Path, integration: Path, branch: str) -> dict[str, Any]:
@@ -677,8 +864,16 @@ class AutopilotRunner:
         return {"applied": True, "branch": str(job["base_branch"]), "commit": _git(source, "rev-parse", "HEAD")}
 
     def run_job(self, job_id: str, cwd: Path) -> dict[str, Any]:
-        cwd = cwd.expanduser().resolve()
+        requested_cwd = cwd.expanduser().resolve()
         job = self.store.get_job(job_id)
+        cwd = self.store.job_workspace_path(job_id)
+        if requested_cwd != cwd:
+            _emit(
+                "source_path_corrected",
+                job_id=job_id,
+                requested=str(requested_cwd),
+                source=str(cwd),
+            )
         old_pid = int(job["runner_pid"]) if job["runner_pid"] else None
         if old_pid and old_pid != os.getpid() and _pid_alive(old_pid):
             raise AutopilotError(f"job already has live runner pid {old_pid}")
@@ -721,15 +916,31 @@ class AutopilotRunner:
                 failed = [row for row in rows.values() if row["status"] in {"failed", "blocked"}]
                 if failed:
                     self.store.update_job(job_id, status="blocked", error="no runnable task remains")
+                    _emit("job_blocked", job_id=job_id, reason="no runnable task remains")
                     return self.store.status(job_id)
                 raise AutopilotError("job has no ready task and is not complete")
             job = self.store.get_job(job_id)
             batch = parallel_batch(ready, int(job["max_workers"]))
+            _emit("batch_started", job_id=job_id, task_ids=[item.id for item in batch])
             usage = self.refresh_usage()
             prepared: list[tuple[TaskContract, dict[str, Any], Route, Path, str]] = []
             assigned: list[str] = []
             for contract in batch:
                 row = rows[contract.id]
+                if int(row["attempt_count"]) >= int(job["max_attempts"]):
+                    self.store.update_task(
+                        job_id,
+                        contract.id,
+                        status="blocked",
+                        result={"status": "retry-limit", "reason": "attempt limit reached"},
+                    )
+                    _emit(
+                        "task_retry_exhausted",
+                        job_id=job_id,
+                        task_id=contract.id,
+                        attempts=int(row["attempt_count"]),
+                    )
+                    continue
                 previous_provider = str(row.get("provider") or "") or None
                 preferred = str(job["lead_provider"])
                 if preferred == "auto" and assigned:
@@ -746,6 +957,10 @@ class AutopilotRunner:
                     job_id, integration, contract, int(row["attempt_count"]) + 1
                 )
                 prepared.append((contract, row, route, worktree, task_branch))
+            if not prepared:
+                self.store.update_job(job_id, status="blocked", error="task retry gate exhausted")
+                _emit("job_blocked", job_id=job_id, reason="task retry gate exhausted")
+                return self.store.status(job_id)
             outcomes: dict[str, dict[str, Any]] = {}
             with ThreadPoolExecutor(max_workers=len(prepared)) as pool:
                 futures = {
@@ -791,16 +1006,24 @@ class AutopilotRunner:
                     )
                 if attempt_count < int(job["max_attempts"]) and outcome["status"] not in {"blocked"}:
                     self.store.update_task(job_id, contract.id, status="ready", result=outcome)
+                    _emit(
+                        "task_retry_scheduled",
+                        job_id=job_id,
+                        task_id=contract.id,
+                        next_attempt=attempt_count + 1,
+                    )
                 else:
                     self.store.update_task(job_id, contract.id, status="blocked", result=outcome)
             rows = self._task_rows(job_id)
             if any(row["status"] == "blocked" for row in rows.values()):
                 self.store.update_job(job_id, status="blocked", error="task retry gate exhausted")
+                _emit("job_blocked", job_id=job_id, reason="task retry gate exhausted")
                 return self.store.status(job_id)
         self.store.update_job(job_id, status="validating", runner_pid=os.getpid())
         review = self._review(job_id, integration, goal)
         if not review["passed"]:
             self.store.update_job(job_id, status="blocked", error="final validation gate failed")
+            _emit("job_blocked", job_id=job_id, reason="final validation gate failed")
             return self.store.status(job_id)
         applied = self._apply_to_source(job_id, cwd, integration, branch)
         self.store.update_job(job_id, status="completed", error="")
@@ -825,6 +1048,7 @@ class AutopilotRunner:
         )
         result = self.store.status(job_id)
         result["apply_result"] = applied
+        _emit("job_completed", job_id=job_id, apply_result=applied)
         return result
 
 
@@ -843,6 +1067,7 @@ def supervise_job(
             raise
         except Exception as error:
             last_error = redact_text(str(error))
+            _emit("runner_restart", job_id=job_id, attempt=attempt, error=last_error)
             store = AutopilotStore()
             store.update_job(job_id, status="paused", error=f"runner restart {attempt}: {last_error}")
             store.recover_running_tasks(job_id, reason=last_error)
@@ -850,4 +1075,5 @@ def supervise_job(
                 time.sleep(min(attempt, 3))
     store = AutopilotStore()
     store.update_job(job_id, status="failed", error=last_error)
+    _emit("job_failed", job_id=job_id, error=last_error)
     return store.status(job_id)

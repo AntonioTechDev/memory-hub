@@ -8,10 +8,8 @@ from pathlib import Path
 
 
 def main() -> None:
-    binary = shutil.which("memoryhub")
     fallback = Path.home() / ".local" / "bin" / "memoryhub"
-    if binary is None and fallback.is_file():
-        binary = str(fallback)
+    binary = str(fallback) if fallback.is_file() else shutil.which("memoryhub")
     if binary is None:
         raise SystemExit("memoryhub is not installed; run the repository install.sh first")
     os.execv(binary, [binary, "delegate-claude", *sys.argv[1:]])
