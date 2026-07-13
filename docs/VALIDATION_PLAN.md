@@ -66,6 +66,23 @@
 | B10 | Real deployment | every registered project matches its canonical Git ref |
 | B11 | Provider alignment | real Claude and Codex return the same branch/commit/token |
 
+## Autopilot gates
+
+| ID | Gate | Pass condition |
+|---|---|---|
+| A1 | Proportional plan | `xs` remains one fast task; task caps reject over-engineering |
+| A2 | Contract integrity | goal, criteria, validation and DAG are schema-valid and acyclic |
+| A3 | Usage routing | real Codex/Claude usage is normalized; limited provider is not selected |
+| A4 | Provider fallback | Codex rate limit hands a fresh attempt to Claude without lost state |
+| A5 | Parallel safety | two disjoint tasks use isolated worktrees; overlapping scope serializes |
+| A6 | Lease recovery | duplicate claims fail; dead runner tasks return to ready exactly once |
+| A7 | Worker proof | self-report alone cannot pass path scope or deterministic validation |
+| A8 | Integration | validated commits cherry-pick sequentially and conflicts fail closed |
+| A9 | Final gate | executable validation plus fresh read-only review are both required |
+| A10 | Source safety | fast-forward occurs only while original HEAD and clean state are unchanged |
+| A11 | Process cleanup | timeout/crash leaves no worker process, lease or task worktree |
+| A12 | Portable skill | Codex/Claude skills match, validate and install idempotently |
+
 ## Commands
 
 ```bash
@@ -73,6 +90,8 @@ PYTHONWARNINGS='error::ResourceWarning' python3 -m unittest discover -s tests -v
 python3 scripts/run_foolproof_eval.py --events 500
 python3 scripts/run_local_stress.py --events 2000 --workers 48
 python3 -m compileall -q memoryhub scripts tests
+python3 -m unittest tests.test_autopilot -v
+memoryhub autopilot usage
 memoryhub brain-doctor --deep
 memoryhub compaction-doctor
 memoryhub activity

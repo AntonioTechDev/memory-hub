@@ -29,6 +29,11 @@ It also installs the portable Codex skill at
 `~/.codex/skills/delegate-to-claude/`. Re-running the installer is idempotent;
 a locally modified skill is backed up before the canonical version replaces it.
 
+The shared Autopilot skill is installed at both
+`~/.codex/skills/autopilot/` and `~/.claude/skills/autopilot/`. Use
+`$autopilot` in Codex or `/autopilot` in Claude. The skill starts a local
+transient runner; no service remains active after the job ends.
+
 It also registers the same MCP `stdio` server in both clients. Changed existing
 files are backed up before the managed block is replaced. Restart both agents
 after the first installation.
@@ -104,6 +109,10 @@ source and wiki page. It is slower and intended for release/audit checks.
   delegations/
     locks/
     runs/
+  autopilot/
+    jobs/
+    logs/
+    runtime/
   locks/
   app/
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Memory Hub Autopilot"
+  short_description: "Run recoverable multi-agent engineering goals"
+  default_prompt: "Use $autopilot to complete this engineering goal autonomously with safe validation."

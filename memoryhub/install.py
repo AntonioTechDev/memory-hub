@@ -26,6 +26,12 @@ COMMON_INSTRUCTION_LINES = [
 CODEX_INSTRUCTION_LINES = [
     *COMMON_INSTRUCTION_LINES,
     "When Codex delegates coding work to Claude, it must use the installed `$delegate-to-claude` skill and its adapter; never invoke the raw `claude` CLI for that workflow.",
+    "When the user explicitly invokes `$autopilot`, use the installed skill and Memory Hub runner; do not imitate the orchestration loop inside the current chat.",
+]
+
+CLAUDE_INSTRUCTION_LINES = [
+    *COMMON_INSTRUCTION_LINES,
+    "When the user explicitly invokes `/autopilot` or `$autopilot`, use the installed Memory Hub skill and runner; do not imitate the orchestration loop inside the current chat.",
 ]
 
 IGNORED_TREE_NAMES = {"__pycache__"}
@@ -45,7 +51,7 @@ This machine uses Memory Hub as the shared operational memory for coding agents.
 
 
 CODEX_INSTRUCTIONS = instruction_block(CODEX_INSTRUCTION_LINES)
-CLAUDE_INSTRUCTIONS = instruction_block(COMMON_INSTRUCTION_LINES)
+CLAUDE_INSTRUCTIONS = instruction_block(CLAUDE_INSTRUCTION_LINES)
 
 
 def timestamp() -> str:
@@ -248,6 +254,41 @@ def install_codex_delegation_skill(target_home: Path) -> dict[str, Any]:
     }
 
 
+def install_bundled_skill(source_name: str, target: Path) -> dict[str, Any]:
+    source = Path(__file__).resolve().parent / "assets" / source_name
+    if not (source / "SKILL.md").is_file():
+        raise ValueError(f"bundled skill is missing: {source}")
+    changed = (
+        not target.is_dir()
+        or _tree_hash(source) != _tree_hash(target)
+        or _has_ignored_artifacts(target)
+    )
+    backup_path: Path | None = None
+    if changed and target.exists():
+        backup_path = target.with_name(f"{target.name}.memoryhub-backup-{timestamp()}")
+        counter = 1
+        while backup_path.exists():
+            backup_path = target.with_name(
+                f"{target.name}.memoryhub-backup-{timestamp()}-{counter}"
+            )
+            counter += 1
+        if target.is_dir():
+            shutil.copytree(target, backup_path)
+            shutil.rmtree(target)
+        else:
+            shutil.copy2(target, backup_path)
+            target.unlink()
+    if changed:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, target, ignore=_portable_copy_ignore)
+    return {
+        "path": str(target),
+        "changed": changed,
+        "backup": str(backup_path) if backup_path else None,
+        "sha256": _tree_hash(target),
+    }
+
+
 def run_agent_commands(binary: Path, target_home: Path) -> list[str]:
     notes: list[str] = []
     env = {**os.environ, "HOME": str(target_home), "CODEX_HOME": str(target_home / ".codex")}
@@ -319,6 +360,14 @@ def install(target_home: Path, *, configure_agents: bool = True) -> dict[str, An
         ),
     }
     delegation_skill = install_codex_delegation_skill(target_home)
+    autopilot_skills = {
+        "codex": install_bundled_skill(
+            "autopilot", target_home / ".codex" / "skills" / "autopilot"
+        ),
+        "claude": install_bundled_skill(
+            "autopilot", target_home / ".claude" / "skills" / "autopilot"
+        ),
+    }
     notes = run_agent_commands(binary, target_home) if configure_agents else []
     return {
         "app_dir": str(app_dir),
@@ -326,6 +375,7 @@ def install(target_home: Path, *, configure_agents: bool = True) -> dict[str, An
         "database": str(target_home / ".local" / "share" / "memoryhub" / "memory.db"),
         "changed": changed,
         "delegation_skill": delegation_skill,
+        "autopilot_skills": autopilot_skills,
         "notes": notes,
     }
 

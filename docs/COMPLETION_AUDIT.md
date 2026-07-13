@@ -1,6 +1,6 @@
-# Completion audit — phases 1, 2 and 2.1
+# Completion audit — phases 1, 2, 2.1 and Autopilot
 
-Snapshot: 2026-07-11.
+Snapshot: 2026-07-13.
 
 | Requirement | Status | Evidence |
 |---|---|---|
@@ -17,15 +17,19 @@ Snapshot: 2026-07-11.
 | Deep deployed consistency | Complete | 4/4 brains, 3,401 files, zero differences |
 | Real provider freshness alignment | Complete | Claude/Codex 4/4 exact values |
 | Open-source packaging | Complete locally | docs, MIT license and CI workflow |
-| Git publication | Pending destination | local folder initially had no repository or remote |
-| Final Phase 1 live repeat | External block | Codex CLI usage quota; prior live gate passed |
+| Autopilot durable orchestration | Complete | SQLite jobs/tasks/runs, leases, heartbeat and SessionStart recovery |
+| Codex/Claude team routing | Complete | normalized usage, model profiles, rate-limit and infrastructure fallback |
+| Bounded isolated execution | Complete | at most two disjoint worktrees, exact retry cap and sequential integration |
+| Independent completion gate | Complete | deterministic commands plus fresh reviewer; false worker claim rejected live |
+| Real cross-provider Autopilot | Complete | Claude plan+implementation, runner test recovery, Codex review, fast-forward |
+| Portable Autopilot skill | Complete | identical clean-install skill in Codex and Claude |
+| Git publication | Complete | `origin` points to the public `memory-hub` repository |
 
 ## Decision
 
-The implementation is ready for continued Automa use and a Linux open-source
-release candidate. The next live Phase 1 repeat must be executed when Codex CLI
-quota renews, and publication requires an explicit Git remote/repository. These
-are release-operation blockers, not known product defects.
+The implementation is ready for continued Automa use and the validated Linux
+open-source release. No known product defect blocks release 0.5.0. macOS and
+Windows remain portability targets rather than certified platforms.
 
 Phase 3 intelligent memory is not included. Decide on it only after observing
 whether operational continuity plus automatically fresh LLM Wiki graphs leaves

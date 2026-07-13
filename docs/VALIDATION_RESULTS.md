@@ -1,14 +1,23 @@
-# Validation results — 2026-07-12
+# Validation results — 2026-07-13
 
 ## Verdict
 
-**Memory Hub 0.4.0 passes the local, CI, clean-install and operational
-dashboard gates on the Automa Linux machine.** The automatic branch policy
+**Memory Hub 0.5.0 passes the local, clean-install, operational dashboard and
+Autopilot gates on the Automa Linux machine.** The automatic branch policy
 remains canonical-only. The current headless shell could not complete the deep
 deployed-brain freshness gate because the external LLM Wiki desktop API exits
 during forced rescan; materialized source files still match canonical Git.
 
-The 0.4.0 release adds `memoryhub activity`, `memoryhub timeline` and
+The 0.5.0 release adds `$autopilot` and the `memoryhub autopilot` lifecycle: a
+durable local runner, goal/task contracts, subscription-aware Codex/Claude
+routing, isolated worktrees, bounded retries, controlled two-worker
+parallelism, deterministic validation and a fresh independent reviewer. A live
+release gate completed with a real Claude planner/worker and a real Codex
+reviewer. Claude created the scoped change but could not run Python because of
+its headless approval policy; the runner independently ran 70 tests, preserved
+the valid change, and completed the reviewed fast-forward without human input.
+
+The 0.4.0 release added `memoryhub activity`, `memoryhub timeline` and
 `memoryhub cleanup --dry-run` for daily operations. Live provider gates were
 rerun successfully on 2026-07-12 after the installer/configuration cleanup.
 Claude and Codex both recovered shared operational memory, survived
@@ -22,7 +31,12 @@ but the desktop API is not stable enough in this shell to complete
 
 | Check | Result | Evidence |
 |---|---:|---|
-| Full suite | PASS | 70/70 with `ResourceWarning` treated as error |
+| Full suite | PASS | 86/86 |
+| Autopilot contract suite | PASS | 16/16: planning, routing, fallback, leases, orphan reaping, retry cap, scope and E2E |
+| Real Autopilot goal | PASS | Claude plan+worker → runner recovery → 70/70 → fresh Codex review → fast-forward |
+| False-positive validation gate | PASS | reviewer rejected a worker claim when the exact command exited 5 with zero tests |
+| Provider sandbox recovery | PASS | Claude approval block and Codex bubblewrap block classified as infrastructure, never product blockers |
+| Retry bound | PASS | configured two-attempt gate stops at exactly two attempts |
 | Compaction continuity | PASS | deterministic pre/post pair verified; mutation detected |
 | Compaction hook dedupe | PASS | `SessionStart` Memory Hub matcher is `startup|resume`; `PostCompact` owns reinjection |
 | Agent-specific instructions | PASS | Codex keeps `$delegate-to-claude`; Claude does not receive Codex-only rules |
@@ -116,6 +130,11 @@ deployment-specific project IDs, paths, commit hashes and model output.
   UTF-8 and files over 2 MB;
 - no CRITICAL or HIGH issue remains open.
 
+Autopilot additionally executes validation commands as argument arrays without
+a shell, accepts only repository-oriented test/build commands, rejects
+`python -c`, publish/deploy/push commands, checks changed paths again after
+validation, and never treats a worker self-report as final evidence.
+
 ## Remaining scope limits
 
 - macOS and Windows clean-machine certification has not been run;
@@ -123,3 +142,6 @@ deployment-specific project IDs, paths, commit hashes and model output.
   headless shell could not keep the Tauri app alive during forced rescan;
 - remote multi-machine memory is intentionally not implemented;
 - Phase 3 intelligent semantic memory remains a future product decision.
+- Claude headless workers on this machine cannot approve some Bash commands;
+  Autopilot recovers scoped changes by running its own deterministic gate, then
+  still requires the independent reviewer.

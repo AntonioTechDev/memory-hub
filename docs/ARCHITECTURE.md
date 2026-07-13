@@ -20,6 +20,13 @@ Codex ----------/                                      |
                                                        +--> local project graphs
 
 canonical Git ref --> post-commit/cron --> brain sync --> LLM Wiki source + graph refresh
+
+$autopilot --> transient local runner --> stateless lead session
+                     |                       |
+                     |                       +--> goal + task contracts
+                     +--> Codex worktree ----+
+                     +--> Claude worktree ---+--> sequential integration --> validation gate
+                     +--> usage + leases + runs --> private SQLite
 ```
 
 There is no central Automa memory service. An Automa VPS contains only Automa's
@@ -37,6 +44,9 @@ The database and API are not exposed online.
 | `memoryhub.claude_worker` | bounded sequential Claude execution, scope checks and process cleanup |
 | `memoryhub.wiki_setup` | shared skill and existing LLM Wiki MCP registration |
 | `memoryhub.brain_sync` | canonical Git materialization, locking, rescan and freshness proof |
+| `memoryhub.autopilot` | goal/task contracts, additive state, routing, usage and leases |
+| `memoryhub.autopilot_provider` | schema-bound ephemeral Codex/Claude invocations and usage probes |
+| `memoryhub.autopilot_runner` | recovery, worktrees, fallback, validation and integration |
 
 SQLite uses WAL, a ten-second busy timeout and `synchronous=NORMAL`. Event IDs
 are idempotent, and bounded redacted events survive a missing final hook.
@@ -112,6 +122,32 @@ timeout or interruption the adapter sends `SIGTERM`, escalates to `SIGKILL`,
 and reaps the child. It also removes descendants left behind after a nominally
 successful parent exit. Results must match a JSON schema; changed paths are
 compared with the pre-run worktree fingerprint. The adapter never retries.
+
+## Autopilot execution
+
+Autopilot is explicit and separate from ordinary chat work. The initial goal is
+classified `xs` through `xl`; task count is capped by that class. Every task
+contains acceptance criteria, validations, path scope, dependencies and an
+abstract `fast`/`builder`/`senior`/`lead` profile. Provider adapters map the
+profile to native model/effort settings and permit environment overrides
+without persisting credentials.
+
+The lead is stateless. Its plan is committed only after schema and DAG
+validation; otherwise a conservative one-task fallback is used. The runner
+keeps atomic job/task/run rows, refreshes provider usage, leases ready tasks and
+starts up to two disjoint worktrees. Failed attempts are discarded, recorded
+and routed fresh. A rate limit opens a provider circuit breaker.
+
+Successful worker changes must pass allow-listed validations, are committed on
+their task branch and cherry-picked sequentially into the integration branch.
+When an otherwise valid in-scope change is blocked only because the worker's
+headless sandbox cannot execute a validation, the runner may execute that same
+allow-listed command; it records the recovery explicitly and still requires the
+fresh reviewer. Retry counts are hard upper bounds, not per-provider bounds.
+The final deterministic suite and a fresh read-only reviewer must both pass.
+The integration branch fast-forwards the original branch only if its HEAD and
+clean state still match the job start. A later agent SessionStart restarts a
+job whose recorded runner disappeared.
 
 ## Security model
 

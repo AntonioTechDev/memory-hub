@@ -64,7 +64,7 @@ class MemoryHubTests(unittest.TestCase):
         self.assertIn(str(db_path), result.stdout)
         self.assertEqual(0o600, db_path.stat().st_mode & 0o777)
         with self.db() as db:
-            self.assertEqual("1", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0])
+            self.assertEqual("2", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0])
 
     def test_claude_to_codex_checkpoint_uses_same_global_task(self) -> None:
         self.cli(
@@ -420,6 +420,8 @@ class MemoryHubTests(unittest.TestCase):
         self.assertEqual(1, claude_agents.count(START_MARKER))
         self.assertEqual(1, claude_agents.count(END_MARKER))
         self.assertFalse(second["delegation_skill"]["changed"])
+        self.assertFalse(second["autopilot_skills"]["codex"]["changed"])
+        self.assertFalse(second["autopilot_skills"]["claude"]["changed"])
         skill = self.home / ".codex" / "skills" / "delegate-to-claude"
         self.assertTrue((skill / "SKILL.md").is_file())
         self.assertTrue((skill / "scripts" / "delegate.py").is_file())
@@ -431,6 +433,10 @@ class MemoryHubTests(unittest.TestCase):
         self.assertIn("PostCompact", config["hooks"])
         self.assertIn("$delegate-to-claude", codex_agents)
         self.assertNotIn("$delegate-to-claude", claude_agents)
+        self.assertTrue((self.home / ".codex" / "skills" / "autopilot" / "SKILL.md").is_file())
+        self.assertTrue((self.home / ".claude" / "skills" / "autopilot" / "SKILL.md").is_file())
+        self.assertIn("$autopilot", codex_agents)
+        self.assertIn("/autopilot", claude_agents)
         self.assertNotIn("compact", str(config["hooks"]["SessionStart"]))
         delegated = subprocess.run(
             [

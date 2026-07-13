@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_TEXT = 16_000
 
 SECRET_PATTERNS = [
@@ -260,10 +260,84 @@ class MemoryStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_events_task_at ON events(task_id, at DESC);
                 CREATE INDEX IF NOT EXISTS idx_events_workspace_at ON events(workspace_id, at DESC);
+                CREATE TABLE IF NOT EXISTS autopilot_jobs (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL REFERENCES tasks(id),
+                    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+                    objective TEXT NOT NULL,
+                    goal_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    max_workers INTEGER NOT NULL DEFAULT 1,
+                    max_attempts INTEGER NOT NULL DEFAULT 2,
+                    lead_provider TEXT NOT NULL DEFAULT 'auto',
+                    base_ref TEXT NOT NULL DEFAULT '',
+                    base_branch TEXT NOT NULL DEFAULT '',
+                    integration_branch TEXT NOT NULL DEFAULT '',
+                    integration_path TEXT NOT NULL DEFAULT '',
+                    runner_pid INTEGER,
+                    runner_heartbeat_at TEXT,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_autopilot_jobs_status_updated
+                    ON autopilot_jobs(status, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS autopilot_tasks (
+                    id TEXT NOT NULL,
+                    job_id TEXT NOT NULL REFERENCES autopilot_jobs(id) ON DELETE CASCADE,
+                    ordinal INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    objective TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    contract_json TEXT NOT NULL,
+                    depends_on_json TEXT NOT NULL DEFAULT '[]',
+                    provider TEXT NOT NULL DEFAULT '',
+                    model TEXT NOT NULL DEFAULT '',
+                    effort TEXT NOT NULL DEFAULT '',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    worktree_path TEXT NOT NULL DEFAULT '',
+                    lease_owner TEXT NOT NULL DEFAULT '',
+                    lease_expires_at TEXT,
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(job_id, id),
+                    UNIQUE(job_id, ordinal)
+                );
+                CREATE INDEX IF NOT EXISTS idx_autopilot_tasks_job_status
+                    ON autopilot_tasks(job_id, status, ordinal);
+                CREATE TABLE IF NOT EXISTS autopilot_runs (
+                    id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL REFERENCES autopilot_jobs(id) ON DELETE CASCADE,
+                    autopilot_task_id TEXT,
+                    role TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    effort TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    pid INTEGER,
+                    started_at TEXT NOT NULL,
+                    heartbeat_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    error TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_autopilot_runs_job_started
+                    ON autopilot_runs(job_id, started_at DESC);
+                CREATE TABLE IF NOT EXISTS provider_usage (
+                    provider TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    remaining_json TEXT NOT NULL DEFAULT '{}',
+                    reset_at TEXT,
+                    source TEXT NOT NULL DEFAULT '',
+                    raw_excerpt TEXT NOT NULL DEFAULT '',
+                    observed_at TEXT NOT NULL
+                );
                 """
             )
             current = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            if current and int(current["value"]) != SCHEMA_VERSION:
+            if current and int(current["value"]) not in {1, SCHEMA_VERSION}:
                 raise ValueError(f"unsupported schema version: {current['value']}")
             db.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",

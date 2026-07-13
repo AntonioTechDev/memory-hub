@@ -33,7 +33,7 @@ class RealAgentEvalRunnerTests(unittest.TestCase):
                 schema = connection.execute(
                     "SELECT value FROM meta WHERE key='schema_version'"
                 ).fetchone()[0]
-            self.assertEqual("1", schema)
+            self.assertEqual("2", schema)
             self.assertTrue((workspace / ".codex" / "hooks.json").is_file())
             self.assertTrue((workspace / ".codex" / "config.toml").is_file())
             self.assertTrue((workspace / ".claude" / "settings.json").is_file())

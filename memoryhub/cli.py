@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
 import shutil
+import sqlite3
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -37,9 +41,39 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_hook(args: argparse.Namespace) -> int:
     payload = read_payload()
     context = store_from_args(args).capture_hook(args.event, args.actor, payload)
+    if args.event == "session-start":
+        _recover_autopilot_for_workspace(
+            Path(str(payload.get("cwd") or payload.get("working_directory") or Path.cwd()))
+        )
     if args.event in {"session-start", "post-compact"}:
         print(context, end="")
     return 0
+
+
+def _recover_autopilot_for_workspace(cwd: Path) -> None:
+    try:
+        store = autopilot_store_from_args(argparse.Namespace(db=None))
+        jobs = store.list_jobs(cwd=cwd.expanduser().resolve(), limit=20)
+        for job in jobs:
+            if job["status"] not in {"planning", "running", "validating"}:
+                continue
+            pid = int(job["runner_pid"]) if job["runner_pid"] else None
+            if pid:
+                try:
+                    os.kill(pid, 0)
+                    continue
+                except ProcessLookupError:
+                    pass
+            new_pid, _ = _launch_autopilot(str(job["id"]), cwd.expanduser().resolve())
+            store.update_job(
+                str(job["id"]),
+                runner_pid=new_pid,
+                error=f"recovered automatically after runner {pid or 'unknown'} disappeared",
+            )
+    except (OSError, ValueError, sqlite3.Error):
+        # Lifecycle memory is fail-open. A broken optional Autopilot recovery
+        # must never prevent the coding client from starting.
+        return
 
 
 def cmd_compaction_doctor(args: argparse.Namespace) -> int:
@@ -79,6 +113,174 @@ def cmd_delegate_claude(args: argparse.Namespace) -> int:
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return exit_code(str(result["status"]))
+
+
+def autopilot_store_from_args(args: argparse.Namespace):
+    from .autopilot import AutopilotStore
+
+    return AutopilotStore(store_from_args(args))
+
+
+def _autopilot_launch_command(job_id: str, cwd: Path) -> list[str]:
+    launcher = Path(sys.argv[0]).expanduser()
+    if launcher.is_file() and os.access(launcher, os.X_OK):
+        return [str(launcher.resolve()), "autopilot", "run", job_id, "--cwd", str(cwd)]
+    return [sys.executable, "-m", "memoryhub", "autopilot", "run", job_id, "--cwd", str(cwd)]
+
+
+def _launch_autopilot(job_id: str, cwd: Path) -> tuple[int, Path]:
+    from .core import memory_home
+
+    logs = memory_home() / "autopilot" / "logs"
+    logs.mkdir(parents=True, exist_ok=True, mode=0o700)
+    log_path = logs / f"{job_id}.log"
+    handle = log_path.open("a", encoding="utf-8")
+    try:
+        process = subprocess.Popen(
+            _autopilot_launch_command(job_id, cwd),
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+    finally:
+        handle.close()
+    log_path.chmod(0o600)
+    return process.pid, log_path
+
+
+def cmd_autopilot_start(args: argparse.Namespace) -> int:
+    from .autopilot import default_goal
+    from .autopilot_runner import supervise_job
+
+    cwd = Path(args.cwd or Path.cwd()).expanduser().resolve()
+    goal = default_goal(args.objective, cwd)
+    store = autopilot_store_from_args(args)
+    job_id = store.create_job(
+        cwd=cwd,
+        goal=goal,
+        max_workers=args.max_workers,
+        max_attempts=args.max_attempts,
+        lead_provider=args.lead_provider,
+    )
+    if args.foreground:
+        report = supervise_job(job_id=job_id, cwd=cwd)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report["status"] == "completed" else 1
+    pid, log_path = _launch_autopilot(job_id, cwd)
+    store.update_job(job_id, runner_pid=pid)
+    print(
+        json.dumps(
+            {
+                "job_id": job_id,
+                "status": "planning",
+                "runner_pid": pid,
+                "log": str(log_path),
+                "next": f"memoryhub autopilot status {job_id}",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_autopilot_run(args: argparse.Namespace) -> int:
+    from .autopilot_runner import supervise_job
+
+    report = supervise_job(
+        job_id=args.job_id,
+        cwd=Path(args.cwd or Path.cwd()).expanduser().resolve(),
+        max_restarts=args.max_restarts,
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report["status"] == "completed" else 1
+
+
+def _resolve_autopilot_job(args: argparse.Namespace) -> str:
+    if getattr(args, "job_id", None):
+        return str(args.job_id)
+    jobs = autopilot_store_from_args(args).list_jobs(
+        cwd=Path(args.cwd).expanduser().resolve() if getattr(args, "cwd", None) else None,
+        limit=1,
+    )
+    if not jobs:
+        raise ValueError("no Autopilot job found")
+    return str(jobs[0]["id"])
+
+
+def cmd_autopilot_status(args: argparse.Namespace) -> int:
+    report = autopilot_store_from_args(args).status(_resolve_autopilot_job(args))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_autopilot_list(args: argparse.Namespace) -> int:
+    rows = autopilot_store_from_args(args).list_jobs(
+        cwd=Path(args.cwd).expanduser().resolve() if args.cwd else None,
+        limit=args.limit,
+    )
+    print(json.dumps(redact(rows), ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_autopilot_usage(args: argparse.Namespace) -> int:
+    from .autopilot_provider import query_usage
+
+    store = autopilot_store_from_args(args)
+    providers = [args.provider] if args.provider != "all" else ["codex", "claude"]
+    for provider in providers:
+        store.save_usage(
+            query_usage(
+                provider,
+                timeout_seconds=args.timeout,
+                codex_binary=args.codex_binary,
+                claude_binary=args.claude_binary,
+            )
+        )
+    print(
+        json.dumps(
+            {key: value.to_dict() for key, value in store.usage().items()},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_autopilot_recover(args: argparse.Namespace) -> int:
+    store = autopilot_store_from_args(args)
+    job_id = _resolve_autopilot_job(args)
+    job = store.get_job(job_id)
+    if str(job["status"]) in {"completed", "cancelled"}:
+        raise ValueError(f"job {job_id} is already {job['status']}")
+    cwd = (
+        Path(args.cwd).expanduser().resolve()
+        if args.cwd
+        else store.job_workspace_path(job_id)
+    )
+    pid, log_path = _launch_autopilot(job_id, cwd)
+    store.update_job(job_id, status="paused", runner_pid=pid, error="manual recovery started")
+    print(json.dumps({"job_id": job_id, "runner_pid": pid, "log": str(log_path)}, indent=2))
+    return 0
+
+
+def cmd_autopilot_stop(args: argparse.Namespace) -> int:
+    store = autopilot_store_from_args(args)
+    job_id = _resolve_autopilot_job(args)
+    job = store.get_job(job_id)
+    pid = int(job["runner_pid"]) if job["runner_pid"] else None
+    if pid:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    store.recover_running_tasks(job_id, reason="Autopilot stopped by user")
+    store.update_job(job_id, status="cancelled", error="stopped by user")
+    print(json.dumps({"job_id": job_id, "status": "cancelled"}, indent=2))
+    return 0
 
 
 def item_map(args: argparse.Namespace) -> dict[str, list[str]]:
@@ -321,6 +523,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             configured = "memoryhub" in content and "--event" in content
         if not configured:
             warnings.append(f"{label} do not contain Memory Hub integration: {path}")
+    for label, path in {
+        "Codex Autopilot skill": home / ".codex" / "skills" / "autopilot" / "SKILL.md",
+        "Claude Autopilot skill": home / ".claude" / "skills" / "autopilot" / "SKILL.md",
+    }.items():
+        if not path.is_file():
+            warnings.append(f"{label} is missing: {path}")
 
     print(f"OK database: {store.db_path}")
     print("OK SQLite integrity" if not errors else "FAILED SQLite integrity or permissions")
@@ -590,6 +798,63 @@ def parser() -> argparse.ArgumentParser:
     delegate.add_argument("--dry-run", action="store_true")
     delegate.set_defaults(func=cmd_delegate_claude)
 
+    autopilot = commands.add_parser(
+        "autopilot", help="Run a recoverable multi-session Codex/Claude engineering goal"
+    )
+    autopilot_commands = autopilot.add_subparsers(dest="autopilot_command", required=True)
+
+    autopilot_start = autopilot_commands.add_parser("start", help="Start one Autopilot goal")
+    autopilot_start.add_argument("--objective", required=True)
+    autopilot_start.add_argument("--cwd")
+    autopilot_start.add_argument("--max-workers", type=int, choices=[1, 2], default=1)
+    autopilot_start.add_argument("--max-attempts", type=int, choices=[1, 2, 3], default=2)
+    autopilot_start.add_argument(
+        "--lead-provider", choices=["auto", "codex", "claude"], default="auto"
+    )
+    autopilot_start.add_argument("--foreground", action="store_true")
+    autopilot_start.set_defaults(func=cmd_autopilot_start)
+
+    autopilot_run = autopilot_commands.add_parser(
+        "run", help="Internal foreground runner used by detached jobs"
+    )
+    autopilot_run.add_argument("job_id")
+    autopilot_run.add_argument("--cwd")
+    autopilot_run.add_argument("--max-restarts", type=int, default=3)
+    autopilot_run.set_defaults(func=cmd_autopilot_run)
+
+    autopilot_status = autopilot_commands.add_parser("status", help="Show one job and its tasks")
+    autopilot_status.add_argument("job_id", nargs="?")
+    autopilot_status.add_argument("--cwd")
+    autopilot_status.set_defaults(func=cmd_autopilot_status)
+
+    autopilot_list = autopilot_commands.add_parser("list", help="List local Autopilot jobs")
+    autopilot_list.add_argument("--cwd")
+    autopilot_list.add_argument("--limit", type=int, default=20)
+    autopilot_list.set_defaults(func=cmd_autopilot_list)
+
+    autopilot_usage = autopilot_commands.add_parser(
+        "usage", help="Refresh normalized Codex/Claude subscription usage"
+    )
+    autopilot_usage.add_argument(
+        "--provider", choices=["all", "codex", "claude"], default="all"
+    )
+    autopilot_usage.add_argument("--timeout", type=int, default=12)
+    autopilot_usage.add_argument("--codex-binary", default="codex")
+    autopilot_usage.add_argument("--claude-binary", default="claude")
+    autopilot_usage.set_defaults(func=cmd_autopilot_usage)
+
+    autopilot_recover = autopilot_commands.add_parser(
+        "recover", help="Restart a paused or crashed Autopilot job"
+    )
+    autopilot_recover.add_argument("job_id", nargs="?")
+    autopilot_recover.add_argument("--cwd")
+    autopilot_recover.set_defaults(func=cmd_autopilot_recover)
+
+    autopilot_stop = autopilot_commands.add_parser("stop", help="Stop one Autopilot job")
+    autopilot_stop.add_argument("job_id", nargs="?")
+    autopilot_stop.add_argument("--cwd")
+    autopilot_stop.set_defaults(func=cmd_autopilot_stop)
+
     mcp = commands.add_parser("mcp", help="Run the local MCP stdio server")
     mcp.set_defaults(func=cmd_mcp)
 
@@ -663,7 +928,7 @@ def main() -> int:
     try:
         args = parser().parse_args()
         return int(args.func(args))
-    except (OSError, ValueError, json.JSONDecodeError) as error:
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
         print(f"memoryhub: {error}", file=sys.stderr)
         return 2
 

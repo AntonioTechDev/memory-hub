@@ -4,7 +4,8 @@ Memory Hub is a local, provider-neutral continuity layer for coding agents.
 Claude Code, Codex and future MCP-compatible clients share the same operational
 task state, while an existing LLM Wiki remains the source of project knowledge.
 
-The current release (`0.4.0`) provides three deliberately separate layers:
+The current release (`0.5.0`) provides three deliberately separate memory
+layers plus an opt-in execution layer:
 
 - **Phase 1 — operational continuity:** prompts, recent events and structured
   handoffs are stored in one private SQLite database for the local user;
@@ -13,6 +14,9 @@ The current release (`0.4.0`) provides three deliberately separate layers:
 - **Phase 2.1 — canonical freshness:** registered project brains automatically
   follow committed `main`/`master` content, never the currently checked-out
   feature branch.
+- **Autopilot — recoverable execution:** one explicit skill invocation compiles
+  a long goal into bounded contracts, fresh Codex/Claude workers, controlled
+  parallel worktrees, fallback and an independent validation gate.
 
 Phase 1 also includes compaction-safe snapshots and an optional, strictly
 sequential Codex-to-Claude implementation worker. The installer adds the
@@ -96,6 +100,39 @@ checks changed paths, checkpoints the result, and kills Claude's whole process
 group on timeout, interruption, or a leaked background child. Codex must still
 review the diff and rerun validation independently.
 
+## Run a long goal with Autopilot
+
+Invoke the installed skill from Codex:
+
+```text
+$autopilot Complete the requested refactor and stop only after the relevant tests pass.
+```
+
+Claude discovers the same skill as `/autopilot`; `AUTOPILOT:` remains a
+portable natural-language trigger. The skill starts the local runner and
+returns immediately. Equivalent observable commands are:
+
+```bash
+memoryhub autopilot start --objective "Complete and validate the refactor"
+memoryhub autopilot status
+memoryhub autopilot usage
+```
+
+The source worktree must be clean. Autopilot creates one integration worktree,
+uses one worker by default and at most two for proven disjoint scopes. Codex
+usage comes from the local app-server rate-limit snapshot; Claude usage comes
+from `/usage`. Rate limits open a circuit breaker and never opt into paid API
+credits. Validated changes fast-forward back only when the source branch remains
+clean and unmoved; otherwise the integration branch is kept.
+
+If a worker produces an in-scope change but its headless sandbox cannot run an
+approved test command, the runner executes that deterministic command itself.
+The change is retained only when the test passes, and the independent final
+review remains mandatory.
+
+See [functional analysis](docs/AUTOPILOT_FUNCTIONAL_ANALYSIS.md) for contracts,
+fallback, anti-over-engineering rules and release gates.
+
 ## Validate
 
 ```bash
@@ -104,6 +141,7 @@ python3 scripts/run_foolproof_eval.py --events 500
 python3 scripts/run_local_stress.py --events 2000 --workers 48
 memoryhub brain-doctor --deep
 python3 -m unittest tests.test_claude_worker -v
+python3 -m unittest tests.test_autopilot -v
 ```
 
 Optional live-provider gates consume Claude/Codex subscription usage:
